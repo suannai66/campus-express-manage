@@ -1,0 +1,26 @@
+{
+  "name": "campus-express-frontend",
+  "version": "0.1.0",
+  "description": "",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "playwright test"
+  },
+  "keywords": [],
+  "author": "",
+  "type": "module",
+  "dependencies": {
+    "@lucide/vue": "1.64.0",
+    "vue": "3.5.44",
+    "vue-router": "4.6.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@vitejs/plugin-vue": "6.0.2",
+    "prettier": "3.6.2",
+    "vite": "7.3.7"
+  },
+  "private": true
+}

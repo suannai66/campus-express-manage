@@ -1,0 +1,14 @@
+.idea/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+playwright-report/
+test-results/
+.codex-doc-qa/
+outputs/
+*.log
