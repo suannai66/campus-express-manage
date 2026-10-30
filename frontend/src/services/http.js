@@ -1,6 +1,22 @@
-// 唯一请求入口。公共鉴权接入后，在此统一处理凭证与 401。
+// F1 统一凭证由请求入口附加；F3/F4 不持有独立登录状态。
+export function safeRedirect(value) {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    /[\\\r\n]/.test(value)
+  )
+    return "/";
+  const target = new URL(value, window.location.origin);
+  return target.origin === window.location.origin
+    ? target.pathname + target.search + target.hash
+    : "/";
+}
+
 export async function request(path, options = {}) {
   const headers = new Headers(options.headers);
+  const token = sessionStorage.getItem("accessToken");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   const response = await fetch(`/api${path}`, {
@@ -16,6 +32,17 @@ export async function request(path, options = {}) {
         : `请求失败（${response.status}）`,
     );
     error.status = response.status;
+    error.code = data?.code;
+    error.fields = data?.fields || {};
+    if (response.status === 401) {
+      sessionStorage.removeItem("accessToken");
+      if (!["/login", "/register"].includes(location.pathname)) {
+        const redirect = safeRedirect(location.pathname + location.search);
+        window.location.assign(
+          `/login?redirect=${encodeURIComponent(redirect)}`,
+        );
+      }
+    }
     throw error;
   }
   return data;
