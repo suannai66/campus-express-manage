@@ -19,13 +19,18 @@ class PaymentStatus(str, Enum):
 
 @dataclass
 class InternalPaymentResult:
-    """渠道结果归一化契约（调整 A）。"""
+    """渠道结果归一化契约（调整 A）。
+
+    v1 补充字段 pay_url：渠道收银台地址（模拟收银台与支付宝沙箱下单均需返回，
+    供前端跳转或展示二维码），PENDING 时必有。
+    """
 
     status: PaymentStatus
     amount_cent: int
-    channel_txn_id: str
+    channel_txn_id: str | None
     raw_signed_payload: str
     channel: str  # mock / alipay_sandbox
+    pay_url: str | None = None
 
 
 class ChannelPort(Protocol):

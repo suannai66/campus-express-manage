@@ -6,6 +6,8 @@
 - 外部事件字段属 B/C 契约（EV-3），联调前与团队书面固化。
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 # ---------- 定价与支付（F7） ----------
@@ -79,10 +81,21 @@ class WithdrawResponse(BaseModel):
     status: str = Field(description="processing / done / failed")
 
 
+class LedgerItem(BaseModel):
+    """流水条目（FR9）。"""
+
+    id: int
+    biz_type: str = Field(description="流水类型：v1 为 RECHARGE / WITHDRAW")
+    delta: int = Field(description="变动额（分），正入负出")
+    balance_after: int = Field(description="变动后余额快照（分）")
+    idempotency_key: str
+    created_at: datetime
+
+
 class LedgerPage(BaseModel):
     """流水分页（FR9）：单页 ≤ 100 条。"""
 
-    items: list[dict] = Field(default_factory=list, description="流水条目")
+    items: list[LedgerItem] = Field(default_factory=list, description="流水条目")
     page: int
     page_size: int
     total: int

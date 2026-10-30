@@ -29,6 +29,9 @@ MIN_SERVICE_FEE_CENT = _env_int("FIN_MIN_SERVICE_FEE_CENT", 1)  # 最低 0.01 �
 FULFILL_TIMEOUT_HOURS = _env_int("FIN_FULFILL_TIMEOUT_HOURS", 12)
 PENALTY_CENT = _env_int("FIN_PENALTY_CENT", 100)  # 固定超时费 1 元，余额不足扣至 0 不追偿
 
+# ---- 提现（FR8） ----
+WITHDRAW_SETTLE_SECONDS = _env_int("FIN_WITHDRAW_SETTLE_SECONDS", 2)  # 模拟渠道到账延迟（秒），查询时惰性流转
+
 # ---- 支付渠道（C-06，EV-1） ----
 CHANNEL_ACTIVE = _env_str("FIN_CHANNEL_ACTIVE", "mock")  # mock | alipay_sandbox
 
