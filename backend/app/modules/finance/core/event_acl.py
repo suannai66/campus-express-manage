@@ -1,63 +1,51 @@
 """事件防腐映射（EV-3，借用 A）：外部事件报文 → 内部命令 + 幂等键派生，单点收敛。
 
 B/C 的字段契约一旦变化，只改本文件；事件处理器与业务服务不接触外部字段名。
+事件 envelope 与类型见《团队接口约定》v1.1 第 12 节：
+{eventId, type, occurredAt, orderId, aggregateType, aggregateId, version, payload}。
 
-幂等键派生规则（阶段 3.3 调整 B）：
-- 下单冻结 = <uid>:<order_id>
-- 完结结算 = <order_id>:settle
-- 取消解冻 = <order_id>:cancel
-- 超时赔付 = <order_id>:penalty
-- 充值    = <channel>:<out_trade_no>
-- 提现    = <uid>:<withdraw_no>
-- 事件消费 = <source>:<event_id>
+幂等与唯一约束（约定第 12 节）：
+- 事件消费 = <consumer>:<eventId>（本地事务内保存去重记录）
+- 订单结算 = <orderId>:settle（至多一次）
+- 订单退款 = <orderId>:refund（至多一次）
+- 充值 confirm = <channel>:<rechargeId>
+- 提现 = <uid>:<withdrawId>
 """
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class UnfreezeCommand:
-    """取消事件映射出的解冻命令。"""
+class SettleCommand:
+    """order.completed 映射出的结算命令。"""
 
-    idempotency_key: str  # <order_id>:cancel
+    idempotency_key: str  # <orderId>:settle
     order_id: str
-    customer_uid: str
+    publisher_uid: str
+    courier_uid: str
+    amount_cent: int
+    base_fee_cent: int
+    commission_rate_bps: int  # 订单快照费率（约定：按快照结算，不使用届时新费率）
 
 
 @dataclass(frozen=True)
-class SettleCommand:
-    """完结事件映射出的结算命令。"""
+class RefundCommand:
+    """order.cancelled 映射出的退款命令。"""
 
-    idempotency_key: str  # <order_id>:settle
+    idempotency_key: str  # <orderId>:refund
     order_id: str
-    customer_uid: str
-    courier_uid: str
+    publisher_uid: str
+    payment_id: str | None  # 未支付取消为 null
     amount_cent: int
 
 
-@dataclass(frozen=True)
-class PenaltyCommand:
-    """超时事件映射出的赔付命令。"""
-
-    idempotency_key: str  # <order_id>:penalty
-    order_id: str
-    customer_uid: str
-    courier_uid: str
+def completed_to_command(payload) -> SettleCommand:
+    """外部 order.completed 事件 → 结算命令。幂等键 <orderId>:settle。"""
+    # TODO(迭代·结算) 按约定第 12 节 payload 字段映射；金额以订单快照为准（Q-05）
+    raise NotImplementedError("TODO(迭代·结算): 实现完结事件映射")
 
 
-def cancel_to_command(payload) -> UnfreezeCommand:
-    """外部取消事件 → 解冻命令。幂等键 <order_id>:cancel。"""
-    # TODO(团队对齐) 与 B/C 书面固化字段名与取值（R1）；校验事件来源身份
-    raise NotImplementedError("TODO(迭代7): 实现取消事件映射")
-
-
-def complete_to_command(payload) -> SettleCommand:
-    """外部完结事件 → 结算命令。幂等键 <order_id>:settle。"""
-    # TODO(团队对齐) 与 B/C 书面固化字段名与取值；金额以服务端为准（Q-05）
-    raise NotImplementedError("TODO(迭代7): 实现完结事件映射")
-
-
-def timeout_to_command(payload) -> PenaltyCommand:
-    """外部超时事件 → 赔付命令。幂等键 <order_id>:penalty。"""
-    # TODO(团队对齐) 与 B/C 书面固化字段名与取值；12h 超时检测由 F5 负责（本模块只订阅）
-    raise NotImplementedError("TODO(迭代7): 实现超时事件映射")
+def cancelled_to_command(payload) -> RefundCommand:
+    """外部 order.cancelled 事件 → 退款命令。幂等键 <orderId>:refund。"""
+    # TODO(迭代·退款) 按约定第 12 节 payload 字段映射
+    raise NotImplementedError("TODO(迭代·退款): 实现取消事件映射")

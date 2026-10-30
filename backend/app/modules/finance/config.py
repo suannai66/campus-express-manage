@@ -1,6 +1,6 @@
 """参数外置（EV-2）：规则参数集中在此，业务代码禁止硬编码费率/金额。
 
-全部参数支持 FIN_ 前缀环境变量覆盖；默认值即需求稿 V3.0 的当前口径。
+全部参数支持 FIN_ 前缀环境变量覆盖；默认值对齐《团队接口约定》v1.1（2026-10-30）。
 调参不改代码，不影响幂等与事务。
 """
 
@@ -16,24 +16,22 @@ def _env_str(name: str, default: str) -> str:
     return os.getenv(name) or default
 
 
-# ---- 订单定价（FR2，定价规则表由本模块维护） ----
-MIN_ORDER_AMOUNT_CENT = _env_int("FIN_MIN_ORDER_AMOUNT_CENT", 100)  # 起送价 1.00 元
+# ---- 平台佣金（团队接口约定 v1.1：1000 bps，仅对 baseFee 向下取整） ----
+# commission = baseFee × COMMISSION_RATE_BPS 整除 10000；小费全部归取件员。
+COMMISSION_RATE_BPS = _env_int("FIN_COMMISSION_RATE_BPS", 1000)
 
-# ---- 平台服务费（FR4） ----
-SERVICE_FEE_RATE = float(_env_str("FIN_SERVICE_FEE_RATE", "0.01"))  # 金额 × 1%
-MIN_SERVICE_FEE_CENT = _env_int("FIN_MIN_SERVICE_FEE_CENT", 1)  # 最低 0.01 元
-
-# ---- 履约超时赔付（FR6） ----
-# 12h 履约时限与超时检测归 F5（订单侧全局定时扫描），本模块只订阅超时事件；
-# 此常量仅作团队对齐记录，结算逻辑不使用。
-FULFILL_TIMEOUT_HOURS = _env_int("FIN_FULFILL_TIMEOUT_HOURS", 12)
-PENALTY_CENT = _env_int("FIN_PENALTY_CENT", 100)  # 固定超时费 1 元，余额不足扣至 0 不追偿
-
-# ---- 提现（FR8） ----
-WITHDRAW_SETTLE_SECONDS = _env_int("FIN_WITHDRAW_SETTLE_SECONDS", 2)  # 模拟渠道到账延迟（秒），查询时惰性流转
+# ---- 提现（FR8 / 团队接口约定 v1.1） ----
+WITHDRAW_SETTLE_SECONDS = _env_int("FIN_WITHDRAW_SETTLE_SECONDS", 3)  # 后台演示任务最早 3 秒后标记 succeeded
+WITHDRAW_PROCESS_INTERVAL_SECONDS = _env_int("FIN_WITHDRAW_PROCESS_INTERVAL_SECONDS", 1)  # 后台扫描间隔
 
 # ---- 支付渠道（C-06，EV-1） ----
+# v1 走演示路径：POST /api/wallet/recharge/{rechargeId}/confirm，真实回调本期不实现；
+# 支付宝沙箱后续以「换适配器 + 配置切换」方式接入。
 CHANNEL_ACTIVE = _env_str("FIN_CHANNEL_ACTIVE", "mock")  # mock | alipay_sandbox
 
-# ---- 流水查询（FR9） ----
+# ---- 流水查询（团队接口约定 v1.1：分页 pageSize 默认 20、最大 100） ----
 LEDGER_PAGE_SIZE_MAX = _env_int("FIN_LEDGER_PAGE_SIZE_MAX", 100)
+
+# ---- 资金写入金额上限（团队接口约定 v1.1：整数 1 ~ 100000 分） ----
+AMOUNT_MIN_CENT = 1
+AMOUNT_MAX_CENT = 100000

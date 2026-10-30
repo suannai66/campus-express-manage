@@ -1,8 +1,11 @@
-"""钱包路由（F8）：余额、充值、提现、流水查询（v1 钱包闭环）。
+"""钱包路由（F8，团队接口约定 v1.1 第 10 节）：余额、充值（confirm 演示）、提现、流水。
 
 鉴权说明：F1 JWT 尚未接入，当前以请求头 X-User-Id 作为开发占位身份，
 F1 接入后统一替换为 JWT 依赖，路由与业务代码不变（Q-05）。
+资金写入支持 Idempotency-Key 请求头（同键重复请求返回原单）。
 """
+
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
@@ -12,10 +15,12 @@ from .. import query as ledger_query
 from ..core import wallet_core
 from ..core.wallet_core import InsufficientBalanceError
 from ..schemas import (
-    BalanceResponse,
-    LedgerPage,
+    RechargeConfirmResponse,
     RechargeRequest,
     RechargeResponse,
+    TransactionsPage,
+    WalletResponse,
+    WithdrawalQueryResponse,
     WithdrawRequest,
     WithdrawResponse,
 )
@@ -23,6 +28,8 @@ from ..services import recharge as recharge_service
 from ..services import withdraw as withdraw_service
 
 router = APIRouter(prefix="/api/wallet", tags=["finance: F8 钱包"])
+
+TRANSACTION_TYPES = Literal["recharge", "payment", "refund", "settlement", "withdrawal"]
 
 
 def _uid(x_user_id: str | None = Header(default=None, alias="X-User-Id")) -> str:
@@ -34,83 +41,83 @@ def _uid(x_user_id: str | None = Header(default=None, alias="X-User-Id")) -> str
     return x_user_id
 
 
-@router.get("/balance", response_model=BalanceResponse)
-def balance(db: Session = Depends(get_db), uid: str = Depends(_uid)) -> BalanceResponse:
-    """FR1 余额查询：返回可用/冻结两项余额（v1 冻结恒为 0）。"""
-    available, frozen = wallet_core.get_balance(db, uid)
-    return BalanceResponse(available_cent=available, frozen_cent=frozen)
+def _idempotency_key(
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> str | None:
+    """资金写入幂等键（约定：所有资金写入须 Idempotency-Key；缺省时服务端生成随机单号）。"""
+    return idempotency_key
 
 
-@router.post("/recharge", response_model=RechargeResponse)
+@router.get("", response_model=WalletResponse)
+def wallet(db: Session = Depends(get_db), uid: str = Depends(_uid)) -> WalletResponse:
+    """GET /api/wallet：统一虚拟账户余额（约定：balance 为整数分，demo 恒 true）。"""
+    return WalletResponse(balance=wallet_core.get_balance(db, uid))
+
+
+@router.post("/recharge", response_model=RechargeResponse, status_code=201)
 def recharge_create(
-    request: RechargeRequest, db: Session = Depends(get_db), uid: str = Depends(_uid)
+    request: RechargeRequest,
+    idempotency_key: str | None = Depends(_idempotency_key),
+    db: Session = Depends(get_db),
+    uid: str = Depends(_uid),
 ) -> RechargeResponse:
-    """FR7 发起充值（原型约定 POST /api/wallet/recharge）：生成充值单并调起渠道支付。"""
-    return recharge_service.create_recharge(db, uid, request)
+    """POST /api/wallet/recharge：创建充值单（pending），返回 201。"""
+    return recharge_service.create_recharge(db, uid, request, idempotency_key)
 
 
-@router.post("/recharge/callback")
-def recharge_callback(payload: dict, db: Session = Depends(get_db)) -> dict:
-    """FR7 渠道回调：验签/防重放由适配器完成，幂等入账；重复回调只入账一次。
+@router.post("/recharge/{recharge_id}/confirm", response_model=RechargeConfirmResponse)
+def recharge_confirm(
+    recharge_id: str, db: Session = Depends(get_db), uid: str = Depends(_uid)
+) -> RechargeConfirmResponse:
+    """POST /api/wallet/recharge/{rechargeId}/confirm：演示专用确认入账（幂等）。
 
-    回调由渠道服务器发起，不走 JWT 鉴权，鉴权依赖渠道验签（mock 渠道无验签）。
+    真实渠道回调本期不实现（约定 v1.1）；关闭演示模式时本接口应返回 404（后续迭代）。
     """
-    try:
-        order = recharge_service.handle_callback(db, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if order is None:
+    result = recharge_service.handle_confirm(db, uid, recharge_id)
+    if result is None:
         raise HTTPException(status_code=404, detail="充值单不存在")
-    return order
+    return result
 
 
-@router.get("/recharge/{out_trade_no}")
-def recharge_query(
-    out_trade_no: str, db: Session = Depends(get_db), uid: str = Depends(_uid)
-) -> dict:
-    """FR7.5 充值单状态查询，仅本人可见。"""
-    order = recharge_service.query_recharge(db, uid, out_trade_no)
-    if order is None:
-        raise HTTPException(status_code=404, detail="充值单不存在")
-    return order
-
-
-@router.post("/withdraw", response_model=WithdrawResponse)
+@router.post("/withdraw", response_model=WithdrawResponse, status_code=201)
 def withdraw_apply(
-    request: WithdrawRequest, db: Session = Depends(get_db), uid: str = Depends(_uid)
+    request: WithdrawRequest,
+    idempotency_key: str | None = Depends(_idempotency_key),
+    db: Session = Depends(get_db),
+    uid: str = Depends(_uid),
 ) -> WithdrawResponse:
-    """FR8 申请提现：校验并扣款（v1 无冻结字段，直接扣可用余额）→ 处理中 → 模拟到账。"""
+    """POST /api/wallet/withdraw：扣可用余额 + 建单同事务；后台任务 ≥3 秒标记 succeeded。"""
     try:
-        return withdraw_service.apply_withdraw(db, uid, request)
+        return withdraw_service.apply_withdraw(db, uid, request, idempotency_key)
     except InsufficientBalanceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/withdraw/{withdraw_no}")
-def withdraw_query(
-    withdraw_no: str, db: Session = Depends(get_db), uid: str = Depends(_uid)
-) -> dict:
-    """FR8 提现单状态查询（processing 超模拟打款延迟后自动流转 done）。"""
-    order = withdraw_service.query_withdraw(db, uid, withdraw_no)
-    if order is None:
+@router.get("/withdrawals/{withdraw_id}", response_model=WithdrawalQueryResponse)
+def withdrawal_query(
+    withdraw_id: str, db: Session = Depends(get_db), uid: str = Depends(_uid)
+) -> WithdrawalQueryResponse:
+    """GET /api/wallet/withdrawals/{withdrawId}：仅本人可见。"""
+    result = withdraw_service.query_withdrawal(db, uid, withdraw_id)
+    if result is None:
         raise HTTPException(status_code=404, detail="提现单不存在")
-    return order
+    return result
 
 
-@router.get("/ledger", response_model=LedgerPage)
-def ledger(
+@router.get("/transactions", response_model=TransactionsPage)
+def transactions(
     page: int = 1,
-    page_size: int = 20,
-    biz_type: str | None = None,
+    pageSize: int = 20,
+    type: TRANSACTION_TYPES | None = None,
     start: str | None = None,
     end: str | None = None,
     db: Session = Depends(get_db),
     uid: str = Depends(_uid),
-) -> LedgerPage:
-    """FR9 流水查询：分页 ≤100、组合条件（类型/时间范围），仅本人可见。"""
+) -> TransactionsPage:
+    """GET /api/wallet/transactions：分页（pageSize ≤100）、type/时间过滤，仅本人可见。"""
     try:
-        return ledger_query.query_ledger(
-            db, uid, page, page_size, biz_type=biz_type, start=start, end=end
+        return ledger_query.query_transactions(
+            db, uid, page, pageSize, type=type, start=start, end=end
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"查询参数错误：{exc}") from exc

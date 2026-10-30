@@ -10,32 +10,56 @@ import { request } from "../../services/http";
 const uid = "u1";
 
 const balance = ref(null); // 可用余额（分）
-const ledger = ref(null); // 流水分页结果
+const transactions = ref(null); // 流水分页结果
 const message = ref("");
 const error = ref("");
 const rechargeOpen = ref(false);
 const rechargeAmount = ref("");
-const cashierOrder = ref(null); // 待支付充值单（模拟收银台）
+const rechargeKey = ref(""); // Idempotency-Key：同一弹窗内重复提交返回同一充值单
+const cashierOrder = ref(null); // 待确认充值单（模拟收银台）
 const withdrawOpen = ref(false);
 const withdrawAmount = ref("");
+const withdrawKey = ref("");
 
-const BIZ_LABELS = { RECHARGE: "充值入账", WITHDRAW: "提现扣款" };
+const TYPE_LABELS = {
+  recharge: "充值入账",
+  withdrawal: "提现扣款",
+  payment: "订单支付",
+  refund: "订单退款",
+  settlement: "履约结算",
+};
 const yuan = (cents) => (cents / 100).toFixed(2);
 const authHeaders = () => ({ "X-User-Id": uid });
 
+function openRecharge() {
+  rechargeKey.value = crypto.randomUUID();
+  rechargeAmount.value = "";
+  message.value = "";
+  error.value = "";
+  rechargeOpen.value = true;
+}
+
+function openWithdraw() {
+  withdrawKey.value = crypto.randomUUID();
+  withdrawAmount.value = "";
+  message.value = "";
+  error.value = "";
+  withdrawOpen.value = true;
+}
+
 async function loadBalance() {
   try {
-    const data = await request("/wallet/balance", { headers: authHeaders() });
-    balance.value = data.available_cent;
+    const data = await request("/wallet", { headers: authHeaders() });
+    balance.value = data.balance;
   } catch (err) {
     error.value = err.message;
     balance.value = null;
   }
 }
 
-async function loadLedger() {
+async function loadTransactions() {
   try {
-    ledger.value = await request("/wallet/ledger?page=1&page_size=20", {
+    transactions.value = await request("/wallet/transactions?page=1&pageSize=20", {
       headers: authHeaders(),
     });
   } catch (err) {
@@ -45,7 +69,7 @@ async function loadLedger() {
 
 function refreshAll() {
   loadBalance();
-  loadLedger();
+  loadTransactions();
 }
 
 onMounted(refreshAll);
@@ -60,8 +84,8 @@ async function submitRecharge() {
   try {
     const order = await request("/wallet/recharge", {
       method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ amount_cent: cents }),
+      headers: { ...authHeaders(), "Idempotency-Key": rechargeKey.value },
+      body: JSON.stringify({ amount: cents }),
     });
     cashierOrder.value = order;
   } catch (err) {
@@ -70,17 +94,16 @@ async function submitRecharge() {
 }
 
 async function confirmPaid() {
-  // 模拟收银台"我已支付"：触发渠道回调（真实渠道由服务端适配器验签，前端只提交订单号）
+  // 模拟收银台"我已支付"：调用演示确认接口（真实渠道回调本期不实现，约定 v1.1）
   error.value = "";
   try {
-    await request("/wallet/recharge/callback", {
+    await request(`/wallet/recharge/${cashierOrder.value.rechargeId}/confirm`, {
       method: "POST",
-      body: JSON.stringify({ out_trade_no: cashierOrder.value.out_trade_no }),
+      headers: authHeaders(),
     });
-    const amount = yuan(cashierOrder.value.amount_cent);
+    const amount = yuan(cashierOrder.value.amount);
     cashierOrder.value = null;
     rechargeOpen.value = false;
-    rechargeAmount.value = "";
     message.value = `充值成功 +¥${amount}`;
     refreshAll();
   } catch (err) {
@@ -98,27 +121,37 @@ async function submitWithdraw() {
   try {
     const order = await request("/wallet/withdraw", {
       method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ amount_cent: cents }),
+      headers: { ...authHeaders(), "Idempotency-Key": withdrawKey.value },
+      body: JSON.stringify({ amount: cents }),
     });
     withdrawOpen.value = false;
-    withdrawAmount.value = "";
     message.value = "提现申请已提交，模拟银行处理中…";
-    // 模拟渠道延迟到账：稍后查询提现单触发服务端惰性流转，再刷新余额与流水
-    setTimeout(async () => {
-      try {
-        await request(`/wallet/withdraw/${order.withdraw_no}`, {
-          headers: authHeaders(),
-        });
-        message.value = `提现成功 ¥${yuan(cents)}（模拟渠道已到账）`;
-        refreshAll();
-      } catch (err) {
-        error.value = err.message;
-      }
-    }, 2500);
+    pollWithdrawal(order.withdrawId, cents);
   } catch (err) {
     error.value = err.message;
   }
+}
+
+async function pollWithdrawal(withdrawId, cents) {
+  // 后台任务最早 3 秒标记 succeeded（约定 v1.1），轮询状态直到到账
+  for (let i = 0; i < 12; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const order = await request(`/wallet/withdrawals/${withdrawId}`, {
+        headers: authHeaders(),
+      });
+      if (order.status === "succeeded") {
+        message.value = `提现成功 ¥${yuan(cents)}（模拟渠道已到账）`;
+        refreshAll();
+        return;
+      }
+    } catch (err) {
+      error.value = err.message;
+      return;
+    }
+  }
+  message.value = "提现仍在处理中，请稍后在流水或提现记录中查看。";
+  refreshAll();
 }
 </script>
 <template>
@@ -132,9 +165,8 @@ async function submitWithdraw() {
     <strong>{{ balance === null ? "¥ —" : `¥ ${yuan(balance)}` }}</strong
     ><span>开发演示使用模拟资金，不产生真实交易</span>
     <div class="hero-actions">
-      <button class="light-button" @click="rechargeOpen = true">
-        模拟充值</button
-      ><button class="hero-link" @click="withdrawOpen = true">模拟提现 ↗</button>
+      <button class="light-button" @click="openRecharge">模拟充值</button
+      ><button class="hero-link" @click="openWithdraw">模拟提现 ↗</button>
     </div>
   </section>
   <p v-if="message" role="status" class="notice">{{ message }}</p>
@@ -144,18 +176,18 @@ async function submitWithdraw() {
     <span class="soft-tag">模拟钱包</span>
   </div>
   <EmptyState
-    v-if="ledger && !ledger.items.length"
+    v-if="transactions && !transactions.items.length"
     class="panel"
     title="还没有收支记录"
     description="完成一笔模拟充值或提现后，流水会出现在这里。"
   />
-  <ul v-else-if="ledger" class="ledger-list panel">
-    <li v-for="item in ledger.items" :key="item.id">
-      <span class="ledger-type">{{ BIZ_LABELS[item.biz_type] || item.biz_type }}</span>
-      <span class="ledger-time">{{ new Date(item.created_at).toLocaleString() }}</span>
-      <strong :class="item.delta >= 0 ? 'ledger-in' : 'ledger-out'"
-        >{{ item.delta >= 0 ? "+" : "" }}{{ yuan(item.delta) }}</strong
-      ><small>余额 {{ yuan(item.balance_after) }}</small>
+  <ul v-else-if="transactions" class="ledger-list panel">
+    <li v-for="item in transactions.items" :key="item.transactionId">
+      <span class="ledger-type">{{ TYPE_LABELS[item.type] || item.type }}</span>
+      <span class="ledger-time">{{ new Date(item.createdAt).toLocaleString() }}</span>
+      <strong :class="item.direction === 'in' ? 'ledger-in' : 'ledger-out'"
+        >{{ item.direction === "in" ? "+" : "-" }}{{ yuan(item.amount) }}</strong
+      ><small>余额 {{ yuan(item.balanceAfter) }}</small>
     </li>
   </ul>
 
@@ -179,15 +211,15 @@ async function submitWithdraw() {
     </section>
   </div>
 
-  <!-- 模拟收银台（演的，触发回调即完成支付） -->
+  <!-- 模拟收银台（演示确认页：触发 confirm 即完成入账） -->
   <div v-if="cashierOrder" class="dialog-backdrop">
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="cashier-title">
       <p class="eyebrow">MOCK CASHIER</p>
       <h2 id="cashier-title">模拟收银台</h2>
-      <p>充值单 {{ cashierOrder.out_trade_no }}</p>
-      <p>应付金额：¥{{ yuan(cashierOrder.amount_cent) }}（模拟支付，不会真实扣款）</p>
+      <p>充值单 {{ cashierOrder.rechargeId }}</p>
+      <p>应付金额：¥{{ yuan(cashierOrder.amount) }}（模拟支付，不会真实扣款）</p>
       <button class="primary-button full-width" @click="confirmPaid">
-        我已支付（触发模拟回调）
+        我已支付（触发演示确认）
       </button>
     </section>
   </div>

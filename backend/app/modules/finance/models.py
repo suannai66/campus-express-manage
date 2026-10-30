@@ -12,7 +12,7 @@
   并观察 SQLite 表结构变更对本地开发库的影响（约定：模型变更后删 db 重建）。
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import BigInteger, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -37,7 +37,7 @@ class Account(Base):
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, comment="版本号，审计用途（SQLite 写串行化下不承担并发控制）"
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class Ledger(Base):
@@ -51,7 +51,7 @@ class Ledger(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="账户所有者")
     biz_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, comment="流水类型：v1 为 RECHARGE / WITHDRAW / WITHDRAW_FAIL；冻结类后续迭代加入"
+        String(32), nullable=False, comment="流水类型（团队接口约定 v1.1 枚举）：v1 为 recharge / withdrawal；payment/refund/settlement 后续迭代加入"
     )
     delta: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="变动额（分），正入负出")
     balance_after: Mapped[int] = mapped_column(
@@ -60,7 +60,7 @@ class Ledger(Base):
     idempotency_key: Mapped[str] = mapped_column(
         String(128), nullable=False, comment="幂等键（派生规则见 core/event_acl.py）"
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("idempotency_key", "biz_type", name="uq_ledger_idempotency"),
@@ -71,37 +71,37 @@ class Ledger(Base):
 
 
 class RechargeOrder(Base):
-    """充值单（FR7）：充值单 → 调起渠道支付 → 回调幂等入账 → 更新状态。"""
+    """充值单（FR7）：v1 走演示路径（create → confirm 幂等入账）；真实回调后续迭代接入。"""
 
     __tablename__ = "recharge_order"
 
-    out_trade_no: Mapped[str] = mapped_column(String(64), primary_key=True, comment="充值单号（商户侧）")
+    out_trade_no: Mapped[str] = mapped_column(String(64), primary_key=True, comment="充值单号（对外为 rechargeId）")
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     amount_cent: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="充值金额（分）")
     channel: Mapped[str] = mapped_column(String(32), nullable=False, comment="mock / alipay_sandbox")
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", comment="pending / success / failed / closed"
+        String(16), nullable=False, default="pending", comment="pending / succeeded / failed / closed"
     )
     channel_txn_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="渠道流水号")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
 
 class WithdrawOrder(Base):
-    """提现单（FR8）：申请 → 校验并冻结 → 处理中 → 模拟到账 → 扣减；失败解冻。"""
+    """提现单（FR8，团队接口约定 v1.1）：申请 → 校验并扣可用余额（同事务）→ processing → 后台任务 ≥3s 标记 succeeded；失败退回（后置）。"""
 
     __tablename__ = "withdraw_order"
 
-    withdraw_no: Mapped[str] = mapped_column(String(64), primary_key=True, comment="提现单号")
+    withdraw_no: Mapped[str] = mapped_column(String(64), primary_key=True, comment="提现单号（对外为 withdrawId）")
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     amount_cent: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="提现金额（分）")
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="processing", comment="processing / done / failed"
+        String(16), nullable=False, default="processing", comment="processing / succeeded / failed"
     )
     fail_reason: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="打款失败原因")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )

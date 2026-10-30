@@ -1,43 +1,44 @@
-"""流水查询（FR9）：分页 ≤100、组合条件；仅本人可见，越权拒绝（Q-05）。
+"""流水查询（团队接口约定 v1.1 第 10 节）：GET /api/wallet/transactions。
 
-读模型与写模型分离：查询逻辑不进入资金事务路径（core/wallet_core.py）。
+- 分页：page 从 1 开始，pageSize 默认 20、最大 100；
+- type 过滤：recharge / payment / refund / settlement / withdrawal（枚举区分大小写）；
+- 权限约束：查询强制限定 uid 本人，不存在越权路径（Q-05）；
+- 读模型与写模型分离：查询逻辑不进入资金事务路径（core/wallet_core.py）。
 """
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import config
+from . import config, iso_utc
 from .models import Ledger
 
 
-def query_ledger(
+def query_transactions(
     db: Session,
     uid: str,
     page: int = 1,
     page_size: int = 20,
     *,
-    biz_type: str | None = None,
+    type: str | None = None,
     start: str | None = None,
     end: str | None = None,
 ) -> dict:
-    """FR9 流水分页查询。
-
-    组合条件：流水类型 / 时间范围（日期 YYYY-MM-DD，含当日）；
-    权限约束：查询强制限定 uid 本人，不存在越权路径。
-    """
+    """流水分页查询：items 字段见 schemas.TransactionItem（约定第 10 节）。"""
     page_size = min(max(page_size, 1), config.LEDGER_PAGE_SIZE_MAX)
     stmt = select(Ledger).where(Ledger.uid == uid)
-    if biz_type:
-        stmt = stmt.where(Ledger.biz_type == biz_type)
+    if type:
+        stmt = stmt.where(Ledger.biz_type == type)
     if start:
         stmt = stmt.where(
-            Ledger.created_at >= datetime.combine(date.fromisoformat(start), time.min)
+            Ledger.created_at
+            >= datetime.combine(date.fromisoformat(start), time.min, tzinfo=timezone.utc)
         )
     if end:
         stmt = stmt.where(
-            Ledger.created_at <= datetime.combine(date.fromisoformat(end), time.max)
+            Ledger.created_at
+            <= datetime.combine(date.fromisoformat(end), time.max, tzinfo=timezone.utc)
         )
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
@@ -47,16 +48,18 @@ def query_ledger(
     return {
         "items": [
             {
-                "id": row.id,
-                "biz_type": row.biz_type,
-                "delta": row.delta,
-                "balance_after": row.balance_after,
-                "idempotency_key": row.idempotency_key,
-                "created_at": row.created_at,
+                "transactionId": str(row.id),
+                "type": row.biz_type,
+                "direction": "in" if row.delta > 0 else "out",
+                "amount": abs(row.delta),
+                "balanceAfter": row.balance_after,
+                "orderId": None,  # v1 仅有钱包类流水；订单资金流后续迭代补齐
+                "referenceId": row.idempotency_key,
+                "createdAt": iso_utc(row.created_at),
             }
             for row in rows
         ],
         "page": page,
-        "page_size": page_size,
+        "pageSize": page_size,
         "total": total,
     }

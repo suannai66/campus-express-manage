@@ -1,20 +1,19 @@
-"""计费工具（EV-2）：平台服务费/超时费等计算收敛到单一纯函数，参数全部来自 config。
+"""计费工具（EV-2，团队接口约定 v1.1）：佣金计算收敛到单一纯函数，参数全部来自 config。
 
-禁止在业务代码中散落计算公式；调参只改配置不改代码（策略模式已裁决不采用）。
+约定（第 10 节）：平台佣金 = baseFee × 1000 bps 向下取整（整除），仅对 baseFee 计佣，
+小费全部归取件员；income = amount − commission。禁止在业务代码中散落计算公式。
 """
 
 from .. import config
 
 
-def calc_platform_fee(amount_cent: int) -> int:
-    """FR4：平台服务费 = max(金额 × 费率, 最低服务费)，四舍五入到分。
-
-    TODO(迭代7) 公式：round(amount_cent * config.SERVICE_FEE_RATE)，
-    下限 config.MIN_SERVICE_FEE_CENT；补充金额恒等式测试。
-    """
-    raise NotImplementedError("TODO(迭代7): 实现服务费计算")
+def calc_commission(base_fee_cent: int) -> int:
+    """平台佣金 = baseFee × COMMISSION_RATE_BPS 整除 10000（向下取整到分）。"""
+    # TODO(迭代·结算) return base_fee_cent * config.COMMISSION_RATE_BPS // 10000
+    raise NotImplementedError("TODO(迭代·结算): 实现佣金计算")
 
 
-def split_settlement(amount_cent: int) -> tuple[int, int]:
-    """FR4：返回 (取货员到账, 平台服务费)。恒等式：到账 + 服务费 = 订单金额。"""
-    raise NotImplementedError("TODO(迭代7): 实现结算拆分")
+def split_settlement(amount_cent: int, base_fee_cent: int) -> tuple[int, int]:
+    """结算拆分：返回 (取件员到账, 平台佣金)。恒等式：到账 + 佣金 = 订单金额。"""
+    # TODO(迭代·结算) commission = calc_commission(base_fee_cent); return amount - commission, commission
+    raise NotImplementedError("TODO(迭代·结算): 实现结算拆分")
