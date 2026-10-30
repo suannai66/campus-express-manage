@@ -20,7 +20,9 @@ defineEmits(["details"]);
     </div>
     <div class="task-meta">
       <span><Clock3 :size="14" />{{ task.time }}</span
-      ><span>示例任务</span>
+      ><span>{{
+        task.live ? (task.demo ? "演示订单" : "已支付") : "示例任务"
+      }}</span>
     </div>
     <div class="task-bottom">
       <div>
