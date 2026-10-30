@@ -41,3 +41,16 @@ class PaymentEvent(BaseModel):
 
 class DemoSession(BaseModel):
     state: Literal["verified", "unverified", "guest"]
+
+
+class OrderStatusEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    eventId: str = Field(min_length=1, max_length=100)
+    orderId: str = Field(min_length=1, max_length=36)
+    version: int = Field(gt=0, strict=True)
+    status: Literal["accepted", "picking_up", "delivering", "delivered", "cancelled", "locked"]
+
+
+class DemoStatusChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["accepted", "cancelled"]

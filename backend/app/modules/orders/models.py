@@ -53,3 +53,16 @@ class PaymentReceipt(Base):
     payment_id: Mapped[str] = mapped_column(String(100), unique=True)
     payload_hash: Mapped[str] = mapped_column(String(64))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class OrderStatusReceipt(Base):
+    """C 状态事件在 B 模块的幂等回执，不接管 C 的履约表。"""
+    __tablename__ = "order_status_receipts"
+    __table_args__ = (UniqueConstraint("order_id", "version"),)
+
+    event_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(36), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

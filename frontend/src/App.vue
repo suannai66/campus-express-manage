@@ -82,7 +82,7 @@ const navigation = [
       </div>
       <div class="topbar-right">
         <span class="preview-label">{{
-          route.path === "/publish"
+          ["/publish", "/tasks"].includes(route.path)
             ? `${route.meta.title} · 订单服务`
             : "界面预览 · 示例数据"
         }}</span

@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 import app.main as main
 from app.database import Base, get_db
 from app.modules.orders import integrations
-from app.modules.orders.models import Order, PaymentReceipt
+from app.modules.orders.models import Order, OrderStatusReceipt, PaymentReceipt
 
 
 class OrderTests(unittest.TestCase):
@@ -171,6 +171,119 @@ class OrderTests(unittest.TestCase):
                 self.assertEqual(result.json()["amountCents"], 885)
                 self.assertEqual(result.json()["pricingSource"], "external")
 
+    def peer_order(self, **changes):
+        order = self.create({**self.body, **changes}).json()
+        self.client.post(f'/api/orders/{order["orderId"]}/demo-pay')
+        with self.sessions.begin() as db:
+            db.get(Order, order["orderId"]).publisher_uid = "peer-student"
+        return order
+
+    def test_hall_only_paid_pending_other_people_and_no_pickup_code(self):
+        own = self.create().json()
+        self.client.post(f'/api/orders/{own["orderId"]}/demo-pay')
+        self.create()  # 未付款，不进入大厅
+        peer = self.peer_order()
+        hidden = self.peer_order()
+        with self.sessions.begin() as db:
+            db.get(Order, hidden["orderId"]).status = "accepted"
+        response = self.client.get("/api/orders?status=pending").json()
+        self.assertEqual(response["total"], 1)
+        self.assertEqual(response["items"][0]["orderId"], peer["orderId"])
+        self.assertNotIn("code", response["items"][0])
+        self.assertNotIn("publisherUid", response["items"][0])
+        detail = self.client.get(f'/api/orders/hall/{peer["orderId"]}').json()
+        self.assertNotIn("code", detail)
+        self.assertEqual(detail["address"], "图书馆正门")
+
+    def test_hall_combined_filters_literal_address_and_tip_boundaries(self):
+        target = self.peer_order(address="实验楼 A_区 100%门口", tip="5.00")
+        self.peer_order(address="实验楼 AB区 100门口", tip="5.01")
+        self.peer_order(address="图书馆正门", station="顺丰服务点", tip="9.00")
+        params = {"station": "菜鸟驿站", "address": "_区 100%", "tipMinCents": 500, "tipMaxCents": 500,
+                  "expectedFrom": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                  "expectedTo": (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()}
+        response = self.client.get("/api/orders", params=params)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([row["orderId"] for row in response.json()["items"]], [target["orderId"]])
+        self.assertEqual(self.client.get("/api/orders", params={"address": "饭堂"}).json()["total"], 0)
+
+    def test_hall_pagination_and_validation(self):
+        for index in range(4):
+            self.peer_order(address=f"实验楼{index}")
+        first = self.client.get("/api/orders?pageSize=2&page=1").json()
+        second = self.client.get("/api/orders?pageSize=2&page=2").json()
+        self.assertEqual(first["total"], 4)
+        self.assertEqual(len(first["items"]), 2)
+        self.assertTrue(set(row["orderId"] for row in first["items"]).isdisjoint(row["orderId"] for row in second["items"]))
+        for params in [{"tipMinCents": 501, "tipMaxCents": 500}, {"page": 0}, {"pageSize": 61},
+                       {"status": "awaiting_payment"}, {"expectedFrom": "2026-01-01T12:00:00"},
+                       {"expectedFrom": "2026-12-02T12:00:00Z", "expectedTo": "2026-12-01T12:00:00Z"}]:
+            self.assertEqual(self.client.get("/api/orders", params=params).status_code, 422)
+
+    def test_hall_auth_and_unavailable_task_detail(self):
+        own = self.create().json()
+        self.assertEqual(self.client.get(f'/api/orders/hall/{own["orderId"]}').status_code, 403)
+        self.assertEqual(self.client.get("/api/orders/hall/missing").status_code, 404)
+        peer = self.peer_order()
+        with self.sessions.begin() as db:
+            db.get(Order, peer["orderId"]).status = "cancelled"
+        self.assertEqual(self.client.get(f'/api/orders/hall/{peer["orderId"]}').status_code, 409)
+        self.client.post("/api/orders/demo/session", json={"state": "guest"})
+        self.assertEqual(self.client.get("/api/orders").status_code, 401)
+
+    def test_demo_hall_seed_is_persisted_idempotent_and_not_reopened(self):
+        self.assertEqual(self.client.post("/api/orders/demo/seed-hall").json()["created"], 3)
+        self.assertEqual(self.client.post("/api/orders/demo/seed-hall").json()["created"], 0)
+        rows = self.client.get("/api/orders").json()["items"]
+        self.assertEqual(len(rows), 3)
+        for order, status in zip(rows[:2], ["accepted", "cancelled"]):
+            self.assertEqual(self.client.post(f'/api/orders/demo/hall/{order["orderId"]}/status', json={"status": status}).status_code, 200)
+        self.assertEqual(self.client.get("/api/orders").json()["total"], 1)
+        self.client.post("/api/orders/demo/seed-hall")
+        self.assertEqual(self.client.get("/api/orders").json()["total"], 1)
+        with self.sessions() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(OrderStatusReceipt)), 2)
+
+    def test_status_event_auth_replay_out_of_order_and_terminal_state(self):
+        order = self.peer_order()
+        with self.sessions.begin() as db:
+            db.get(Order, order["orderId"]).pricing_source = "external"
+        event = {"eventId": "status-2", "orderId": order["orderId"], "version": 2, "status": "accepted"}
+        path = "/api/orders/events/status-changed"
+        with patch.dict(os.environ, {"F3_DEPENDENCY_MODE": "external", "F4_STATUS_EVENT_SECRET": "status-secret"}):
+            headers = {"X-Order-Status-Secret": "status-secret"}
+            self.assertEqual(self.client.post(path, json=event).status_code, 403)
+            self.assertEqual(self.client.post(path, json=event, headers=headers).json()["duplicate"], False)
+            self.assertEqual(self.client.post(path, json=event, headers=headers).json()["duplicate"], True)
+            self.assertEqual(self.client.post(path, json={**event, "status": "cancelled"}, headers=headers).status_code, 409)
+            self.assertEqual(self.client.post(path, json={**event, "eventId": "other-id"}, headers=headers).status_code, 409)
+            older = {**event, "eventId": "status-1", "version": 1, "status": "delivering"}
+            self.assertEqual(self.client.post(path, json=older, headers=headers).json()["ignored"], True)
+            with self.sessions() as db:
+                self.assertEqual(db.get(Order, order["orderId"]).status, "accepted")
+            terminal = {**event, "eventId": "status-3", "version": 3, "status": "cancelled"}
+            self.assertEqual(self.client.post(path, json=terminal, headers=headers).status_code, 200)
+            self.assertEqual(self.client.post(path, json={**terminal, "eventId": "status-4", "version": 4, "status": "delivered"}, headers=headers).status_code, 409)
+
+    def test_hall_demo_endpoints_closed_in_external_mode_and_modes_isolated(self):
+        order = self.peer_order()
+        with self.sessions.begin() as db:
+            db.get(Order, order["orderId"]).pricing_source = "external"
+        self.assertEqual(self.client.get("/api/orders").json()["total"], 0)
+        self.assertEqual(self.client.get(f'/api/orders/hall/{order["orderId"]}').status_code, 404)
+        main.app.dependency_overrides[integrations.current_identity] = lambda: integrations.Identity("real-user", "同学", True)
+        with patch.dict(os.environ, {"F3_DEPENDENCY_MODE": "external"}):
+            self.assertEqual(self.client.post("/api/orders/demo/seed-hall").status_code, 404)
+            self.assertEqual(self.client.post(f'/api/orders/demo/hall/{order["orderId"]}/status', json={"status": "accepted"}).status_code, 404)
+
+    def test_unpaid_order_cannot_accept_status_event(self):
+        order = self.create().json()
+        with self.sessions.begin() as db:
+            db.get(Order, order["orderId"]).pricing_source = "external"
+        with patch.dict(os.environ, {"F3_DEPENDENCY_MODE": "external", "F4_STATUS_EVENT_SECRET": "status-secret"}):
+            result = self.client.post("/api/orders/events/status-changed", headers={"X-Order-Status-Secret": "status-secret"},
+                                      json={"eventId": "unpaid-status", "orderId": order["orderId"], "version": 1, "status": "accepted"})
+            self.assertEqual(result.status_code, 409)
 
 
 if __name__ == "__main__":
