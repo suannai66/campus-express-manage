@@ -12,3 +12,7 @@ test-results/
 .codex-doc-qa/
 outputs/
 *.log
+backend/*.db
+backend/*.db-journal
+backend/*.db-wal
+backend/*.db-shm
