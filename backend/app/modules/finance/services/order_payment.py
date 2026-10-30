@@ -1,43 +1,37 @@
-"""F7 用例编排：订单定价、下单冻结、完结结算、取消解冻、超时赔付。
+"""F7 用例编排（团队接口约定 v1.1）：报价、余额支付、结算、退款。
 
-资金状态变更一律经 core/wallet_core.py；幂等键派生见 core/event_acl.py。
+资金状态变更一律经 core/wallet_core.py；事件命令与幂等键派生见 core/event_acl.py。
+TODO(迭代·冻结) 冻结字段（v2）与 OrderGateway（B 的只读快照）接入后实现。
 """
 
-from ..core.event_acl import PenaltyCommand, SettleCommand, UnfreezeCommand
-from ..schemas import FreezeResponse, QuoteRequest, QuoteResponse
+from ..core.event_acl import RefundCommand, SettleCommand
+from ..schemas import PrepayRequest, PrepayResponse
 
 
-def quote(request: QuoteRequest) -> QuoteResponse:
-    """FR2 定价：基础运费（距离/重量查表）+ 小费；低于起送价拒绝（FR2.3）。"""
-    # TODO(迭代7) 定价规则表的具体数值（距离/重量档）待与成员 B 对齐（R2）
-    # TODO(迭代7) 金额校验：≥ config.MIN_ORDER_AMOUNT_CENT，精度到分
-    raise NotImplementedError("TODO(迭代7): 实现定价")
+def quote(draft: dict) -> dict:
+    """应用内定价能力 PricingService.quote（约定第 10 节：不提供 HTTP 自调用）。
 
-
-def pay_and_freeze(uid: str, order_id: str, amount_cent: int) -> FreezeResponse:
-    """FR3 下单冻结：幂等键 <uid>:<order_id>，重复请求返回首次结果（FR3.4）。
-
-    冻结成功后发布"支付成功 = 冻结成功"事件供 F3 订阅，订单状态由 F3 自行流转。
+    输入：stationId、deliveryAreaId、size、weight（十进制字符串 kg）、tip（整数分）；
+    输出 Quote：quoteId、pricingVersion、baseFee、tip、amount、commissionRateBps、expiresAt、demo。
+    TODO(迭代·报价) 按约定第 10 节演示路线费率实现查表与报价。
     """
-    raise NotImplementedError("TODO(迭代7): 实现冻结编排")
+    raise NotImplementedError("TODO(迭代·报价): 实现定价")
+
+
+def prepay(uid: str, request: PrepayRequest) -> PrepayResponse:
+    """余额支付（POST /api/pay/prepay）：同 paymentRequestId 只创建一个支付记录，重试返回原结果。
+
+    成功同步返回 succeeded 并发布 payment.succeeded；确定失败返回 failed（code）并发布 payment.failed。
+    TODO(迭代·冻结) 经只读 OrderGateway 校验预占/发布者/金额，不直接修改订单。
+    """
+    raise NotImplementedError("TODO(迭代·冻结): 实现余额支付")
 
 
 def settle_order(command: SettleCommand) -> None:
-    """FR4 完结结算：扣冻结 → 取货员 T+0 入账 → 平台服务费只记流水。
-
-    金额恒等式：服务费 + 取货员到账 = 订单金额；多账户按 ID 固定顺序加锁防死锁（FR4.5）。
-    """
-    raise NotImplementedError("TODO(迭代7): 实现结算编排")
+    """order.completed 结算：按订单快照结算，取货员入账 + 平台佣金留账（仅 baseFee 计佣）。"""
+    raise NotImplementedError("TODO(迭代·结算): 实现结算编排")
 
 
-def cancel_and_unfreeze(command: UnfreezeCommand) -> None:
-    """FR5 取消解冻：解冻仅由取消事件触发（唯一触发源）；已结算订单不再解冻（FR5.3）。"""
-    raise NotImplementedError("TODO(迭代7): 实现解冻编排")
-
-
-def timeout_penalty(command: PenaltyCommand) -> None:
-    """FR6 超时赔付：解冻 + 扣取货员固定超时费（余额不足扣至 0 不追偿）补偿客户。
-
-    同时请求 F6 自动扣减取货员信用积分（联动方向，信用数据归 C 维护）。
-    """
-    raise NotImplementedError("TODO(迭代7): 实现赔付编排")
+def refund_order(command: RefundCommand) -> None:
+    """order.cancelled 退款：全额退回发布者钱包，不收佣金。"""
+    raise NotImplementedError("TODO(迭代·退款): 实现退款编排")
