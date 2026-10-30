@@ -1,0 +1,191 @@
+# B/C/D 业务接口与对接边界 v1.1
+
+生效日期：2026-10-30。队长授权确定本基线，后续通过版本修订调整。公共规则与 F1/F2 以 [团队接口约定](api-contract-proposal.md) 为准。本文是开发目标，不宣称现有 PR 已实现全部要求。数据库采用 SQLAlchemy 2.0 + SQLite，单个 FastAPI 应用；模拟资金和验证码，不接真实支付。
+
+## 1. 共用数据和所有权
+
+| 能力 | 实现负责人 | 调用者 / 边界 |
+| --- | --- | --- |
+| 当前身份、认证、公共鉴权 | A | 所有模块使用同一后端依赖；不能信任客户端自报身份 |
+| 订单主表、查询、报价快照、统一状态更新入口 | B | C 通过 B 的公共订单能力操作，不另建第二套订单主表 |
+| 接单、履约、取消资格、评价、信用 | C | 编排规则并通过统一订单能力原子更新状态 |
+| 报价、支付、退款、结算、钱包流水 | D | B 只读取报价和支付结果，不自行计算正式费用或写余额 |
+| 事件表、投递器、重试公共组件 | A | B/C/D 各自实现生产与消费处理器；组件由 A 接入应用启动入口 |
+
+B 的 OrderGateway 公共能力是订单所有者提供的同步命令入口，不是任意 ORM 写入权限。C 可调用该入口完成本模块的状态操作；支付、取消、完结等跨模块结果通知仍走持久化事件，不允许形成互相回调的写入循环。事件消费不能重新发布同一个事实来回触发。
+
+### 标识、金额和字段
+
+- 所有 ID 为字符串，长度 1～100；订单 ID 建议 UUID。客户端不依赖编码规则。
+- 所有金额字段，包括 tip、baseFee、amount、balance、commission、income、refundAmount，均为 JSON 整数，单位分。禁止用 amount 表示元字符串；页面自行除以 100 展示。
+- 未声明的请求字段拒绝，返回 422。金额拒绝字符串、小数、布尔值、NaN；枚举区分大小写。
+- version 为正整数，从 1 开始，每次订单业务状态或支付控制状态变化增加 1。业务规则与版本必须在同一次条件更新中检查。
+- 所有日期返回 UTC ISO 8601（Z），日期请求必须有时区；金额、时间、UID 不能由页面隐藏字段获得信任。
+
+## 2. 订单状态和通用响应
+
+| status | 中文 | 允许的后续状态 / 触发者 |
+| --- | --- | --- |
+| pending_payment | 待支付 | pending：B 消费支付成功；cancelled：C 取消，且 paymentStatus=unpaid |
+| pending | 待接单 | accepted：C 接单；cancelled：C 取消 |
+| accepted | 已接单 | picking_up：本单取件员开始取件 |
+| picking_up | 取件中 | delivering：本单取件员核对取件码并确认取件 |
+| delivering | 配送中 | delivered：本单取件员确认送达 |
+| delivered | 已送达 | 终态，可评价和结算，不再变更履约状态 |
+| cancelled | 已取消 | 终态；已支付订单异步退款 |
+
+paymentStatus：unpaid / paying / paid。退款不改写原支付成功事实；refundStatus 单独使用 none / processing / succeeded。订单不使用 locked 状态；锁定另设 locked 布尔值、pickupFailureCount、lockReason。取件码累计连续错误 3 次后锁定，不自动解锁，本期不提供用户解锁功能，课程异常演示由维护脚本明确重置。
+
+OrderSummary 固定字段：orderId、company、stationId、stationName、deliveryAreaId、deliveryAreaName、size、weight、expectedAt、note、baseFee、tip、amount、status、paymentStatus、refundStatus、version、createdAt、demo。
+
+OrderDetail 在 Summary 上增加：publisherUid、courierUid（未接单为 null）、locked、pickupFailureCount，以及按权限裁剪的 address、code。发布者查看自己的订单时还可获得当前 paymentRequestId（无则 null）。
+
+### 资料可见范围
+
+| 请求者 | 送达区域 | 完整 address | 取件 code |
+| --- | --- | --- | --- |
+| 已登录大厅浏览者、未接单同学 | 可见 | 不返回该字段 | 不返回该字段 |
+| 本单发布者 | 可见 | 可见 | 可见 |
+| 接单成功后的本单取件员 | 可见 | 可见 | 可见 |
+| 无关用户直接请求订单详情 | 拒绝 404 | 不返回 | 不返回 |
+
+大厅列表不返回 publisherUid、courierUid、paymentRequestId。备注在提交页提示勿填写手机号、取件码或门牌；接口字段裁剪不能保证用户自填备注不泄露隐私。
+
+## 3. B：发布、查询与支付预占
+
+除地点目录外，以下接口均要求已登录。创建和报价还要求最新 verified=true。创建、支付预占要求 Idempotency-Key，UUID 字符串建议值，同一用户与操作范围隔离。
+
+### 地点目录及报价输入
+
+GET /api/orders/locations → `{stations:[{id,name}],deliveryAreas:[{id,name}]}`。目录由 B 维护稳定 ID，D 的费率表引用这些 ID；不从自由文本猜测距离。
+
+OrderDraft 必填：company（1～30 字符）、code（1～50）、stationId、deliveryAreaId（来自目录）、address（1～200）、size（small/medium/large）、weight（十进制字符串，kg，>0 且 ≤30，最多两位小数）、expectedAt（未来至 7 天内）、tip（整数 0～99900）。note 选填，默认空字符串，最长 200。字符串先 trim，必填项不能全空白。UID、总价和订单状态不允许作为创建输入。
+
+| 方法与路径 | 输入 | 成功响应 | 责任 |
+| --- | --- | --- | --- |
+| POST /api/orders/quote | OrderDraft | Quote，200 | B 校验，调用 D PricingService.quote |
+| POST /api/orders | OrderDraft + Idempotency-Key | OrderDetail，201，status=pending_payment | B 后端重新报价并保存快照 |
+| GET /api/orders | scope=hall/mine，默认 hall；分页参数 | 通用分页对象 | B |
+| GET /api/orders/{orderId} | 路径 ID | 本单相关用户的 OrderDetail | B，使用统一订单权限能力 |
+| POST /api/orders/{orderId}/payment-request | `{version}` + Idempotency-Key | `{orderId,paymentRequestId,amount,paymentStatus,version}` | B，原子预占 |
+
+Quote：quoteId、pricingVersion、baseFee、tip、amount、commissionRateBps、expiresAt、demo；quoteId 为服务端标识，不由前端用于覆盖价格。订单创建重新报价并保存 pricingVersion、baseFee、tip、amount、commissionRateBps 快照。报价预览 5 分钟有效；创建后费率变化不修改已有订单。
+
+GET /api/orders 过滤参数：status（hall 仅 pending）、stationId、deliveryAreaId、tipMin、tipMax（均整数分，0～99900）、expectedFrom、expectedTo（含端点）。下限大于上限返回 422。mine 增加 role=publisher/courier/all，默认 all；缺省不过滤状态。page 默认 1、pageSize 默认 20、最大 100。排序：hall 为 expectedAt 升序、createdAt 降序、orderId 升序；mine 为 createdAt 降序、orderId 升序。hall 仅已支付待接单且非本人发布，允许未认证学生浏览。前端至多每 10 秒刷新可见大厅，离开页面停止轮询，失败不能伪装为零条任务。
+
+### 支付与取消竞争
+
+支付前由 B 的 payment-request 将 paymentStatus 从 unpaid 原子改为 paying，生成并保存 paymentRequestId、payerUid 和金额快照；只允许发布者对未取消的 pending_payment 订单执行。已有预占返回现有请求标识，不创建第二次支付预占。版本冲突返回 409。
+
+前端随后携 orderId、paymentRequestId 调 D 的 /api/pay/prepay。D 必须通过只读 OrderGateway 验证预占、发布者和金额，不直接修改订单。B 消费 payment.succeeded 后将 paying→paid，pending_payment→pending；消费明确的 payment.failed 后 paying→unpaid。取消仅能在 unpaid 或已支付 pending 时成功；paying 返回 409 PAYMENT_IN_PROGRESS。
+
+页面或请求超时不代表支付失败。不得根据超时直接解除预占；发布者重新进入页面可取回同一请求继续查询/重试。维护命令通过 D 的支付结果对账并重投事件；没有确定失败事实前保留 paying，避免已扣款后又允许取消。D 确定失败时也保存失败结果并发布事件。不得持有 SQLite 写事务等待网络或用户输入。
+
+## 4. C：接单、履约、取消、评价和信用
+
+| 方法与路径 | 输入 | 成功响应 / 条件 |
+| --- | --- | --- |
+| POST /api/orders/{orderId}/accept | `{version}` + Idempotency-Key | OrderDetail；已认证、信用合格、非本人发布、已支付 pending |
+| POST /api/orders/{orderId}/status | `{action,version,code?}` + Idempotency-Key | OrderDetail；仅本单取件员 |
+| GET /api/orders/{orderId}/status | 无 | `{orderId,status,paymentStatus,refundStatus,locked,version}`；本单相关用户 |
+| POST /api/orders/{orderId}/cancel | `{version,reason}` + Idempotency-Key；reason 1～200 字符 | `{orderId,status,refundStatus,version}`；仅发布者、接单前 |
+| POST /api/orders/{orderId}/reviews | `{rating,tags,comment}` | `{reviewId,orderId,createdAt}`，201 |
+| GET /api/orders/{orderId}/reviews | 分页 | 本单相关用户的双方评价列表 |
+| GET /api/users/{uid}/credit | 无 | `{uid,score,level,reviewCount,creditEligible}`；仅本人 |
+
+action 固定 start_pickup / confirm_pickup / confirm_delivery，分别对应 accepted→picking_up→delivering→delivered。confirm_pickup 必须携 code，其他 action 拒绝携 code。身份认证要求在接单和履约动作时均检查；信用分在接单时检查，不因履约途中降分导致订单无法送达。
+
+code 错误返回 422 PICKUP_CODE_MISMATCH，但错误次数须提交；第三次返回 409 ORDER_LOCKED，同时写入双方可查询的履约通知。错误重试同一幂等键不得重复计数；正确核对清零连续错误次数。已经锁定的订单拒绝后续履约动作。
+
+评价要求 delivered、本人为发布者或取件员、每人每单一次，提交后不可修改；数据库唯一约束为 (orderId,reviewerUid)。rating 为整数 1～5；tags 为字符串数组，最多 5 项、每项 1～20 字符；comment 默认空字符串，最多 500。禁止自己评价自己，目标用户由服务端根据订单确定。
+
+初始信用：score=null、level=new、reviewCount=0、creditEligible=true。取得评价后，只统计该用户以取件员身份收到的最近 30 个订单评价，按评价 createdAt 降序、reviewId 降序；以未四舍五入均分决定准入。level：均分<3 为 restricted，3≤均分<4 为 normal，≥4 为 good。score 展示四舍五入两位小数；reviewCount 是本次均分采用的有效样本数，0～30。F5 结合认证等其他条件决定能否接单。
+
+取消：pending_payment 且 unpaid 可取消且不退款；pending 且 paid 可取消并全额退 amount，refundStatus=processing；accepted 及后续不开放用户取消。接单与取消通过同一订单版本条件更新竞争，只能一次成功。取消写入 order.cancelled，D 消费后退款；B 消费 refund.succeeded 后才将 refundStatus 改为 succeeded。页面应显示“退款处理中”，不得在取消响应中提前显示已退款。本期不实现部分退款、违约金、已接单申诉或用户解锁。
+
+## 5. D：报价、支付、钱包与资金规则
+
+报价是同一应用内的只读 PricingService.quote(draft)；不要求 HTTP 自调用。接口负责人 D，输入取件点 ID、送达区域 ID、规格、weight 和整数 tip；输出 Quote。不修改钱包或订单，也不信任前端 quoteId 对应金额。
+
+演示地点 ID：station_cainiao（菜鸟驿站）、station_sf（顺丰服务点）；deliveryAreas：zone_qinyuan（沁园）、zone_zhuyuan（竹园）、zone_public（公共交接点）。演示路线费率（分）如下，不代表真实校园距离：
+
+| stationId | zone_qinyuan | zone_zhuyuan | zone_public |
+| --- | --- | --- | --- |
+| station_cainiao | 200 | 300 | 200 |
+| station_sf | 300 | 200 | 200 |
+
+规格附加费 small=0、medium=100、large=300；重量前 1kg 包含在路线费中，之后按不足 1kg 进 1kg，每档加 100 分。baseFee=路线费+规格费+重量附加费，amount=baseFee+tip。费率版本 demo-20261030-v1，平台抽成 1000 bps（10%），仅对 baseFee 向下取整，小费全部归取件员：commission=baseFee×1000整除10000，income=amount-commission。B 保存抽成比例快照；D 按快照结算，不使用届时新费率。
+
+除回调外以下接口须登录，所有资金写入须 Idempotency-Key；客户端不得提交 uid、余额、paymentStatus 或佣金覆盖值。
+
+| 方法与路径 | 输入 | 成功响应 |
+| --- | --- | --- |
+| POST /api/pay/prepay | `{orderId,paymentRequestId}` | `{paymentId,orderId,amount,status,code}`；余额支付同步返回 succeeded（code=null）或确定失败的 failed 结果 |
+| GET /api/pay/payments/{paymentId} | 无 | `{paymentId,orderId,amount,status,code}`；仅付款人，成功 code=null |
+| GET /api/wallet | 无 | `{balance,currency:"CNY",demo:true}` |
+| POST /api/wallet/recharge | `{amount}`，整数 1～100000 | `{rechargeId,amount,status:"pending",demo:true}`，201 |
+| POST /api/wallet/recharge/{rechargeId}/confirm | 无 | `{rechargeId,amount,status:"succeeded"}`；演示专用且仅本人 |
+| POST /api/wallet/withdraw | `{amount}`，整数 1～100000，不超过可用余额 | `{withdrawId,amount,status:"processing"}`，201 |
+| GET /api/wallet/transactions | type 可选 recharge/payment/refund/settlement/withdrawal；分页 | 通用分页对象 |
+| GET /api/wallet/withdrawals/{withdrawId} | 无 | `{withdrawId,amount,status}`；仅本人 |
+
+支付确定失败 code 如 INSUFFICIENT_BALANCE；失败也保存 paymentId、paymentRequestId 与结果，发 payment.failed。相同支付预占只创建一个支付记录，重试返回原结果。重新付款必须由 B 在明确失败解锁后创建新的预占；成功支付不得换幂等键再扣款。
+
+演示充值 confirm 在关闭演示模式时返回 404；真实回调路径本期不实现。提现先扣可用余额，流水与提现记录同事务写入；应用后台演示任务最早 3 秒后更新为 succeeded，重启后继续处理 processing 记录；失败记录为 failed，并且仅一次退回扣除金额。不涉及银行账号或真实资金。
+
+交易流水字段：transactionId、type、direction（in/out）、amount、balanceAfter、orderId（无则 null）、referenceId、createdAt。用户余额初始为 0；演示数据通过受控初始化脚本生成，不提供匿名改余额接口。
+
+钱包扣款必须使用条件更新保证 balance≥amount，不能先读余额再无条件覆盖；余额不得为负。WalletService.changeBalance 由 D 独占维护，支付、退款、充值、提现、结算都使用该能力，且余额、流水、业务记录、去重记录与应发事件在同一事务保存。取件员收益及平台佣金均须留账；退款退回全额到原发布者钱包，退款不收佣金。结算状态由 D 维护并可随订单详情通过只读接口聚合展示。
+
+## 6. 内部能力接口（Python，不作为匿名 HTTP 入口）
+
+所有能力由应用启动入口装配，使用同一 Base 和会话工厂；涉及同一次写入时共用 UnitOfWork。仓储内部不得自行 commit，编排用例统一提交。
+
+| 能力 | 参数与结果 | 维护者 |
+| --- | --- | --- |
+| IdentityService.current / require_verified | 凭证→uid、role、最新认证状态 | A |
+| OrderGateway.get_snapshot | orderId→发布者、取件员、状态、版本、金额和费率快照、支付预占及已成功 paymentId（无则 null） | B，D/C 仅按业务权限读取 |
+| OrderGateway.transition | orderId、expectedVersion、expectedStatus、changes、actorUid、operation；条件更新成功返回新快照 | B；C 用于接单/履约/取消，禁止开放任意 changes 给 HTTP 请求 |
+| PricingService.quote | 见第 5 节，返回 Quote | D |
+| CreditService.get | uid→score、level、reviewCount、creditEligible | C；F5 内部可读取目标取件员 |
+| WalletService.changeBalance | uid、direction、amount、businessType、businessId、共享事务→流水结果 | D 内部使用 |
+
+C 的业务动作事务同时调用受控 OrderGateway 并写本模块的日志/事件。B 的支付事件消费者调用同一状态入口。只有白名单状态转换可执行；处理器负责校验权限、paymentStatus 和 locked。不得将同一个事务拆成多次提交，不在 SQLite 写事务内发 HTTP。B/D 只读相互查询不构成相互写回。
+
+## 7. 事件、重试与幂等
+
+事件 envelope：`{eventId,type,occurredAt,orderId,aggregateType,aggregateId,version,payload}`。eventId 为 UUID，occurredAt 为 UTC；version 属于 aggregateType/aggregateId 指向的实体，支付版本不得与订单版本比较。事件只包含必要业务标识与金额，不携 Token、手机号、取件码或证件。
+
+| type | 生产者 | 消费者 | payload 必填 |
+| --- | --- | --- | --- |
+| payment.succeeded | D | B | paymentId、paymentRequestId、payerUid、amount |
+| payment.failed | D | B | paymentId、paymentRequestId、payerUid、amount、code |
+| order.status_changed | C | B 大厅投影/刷新订阅 | fromStatus、status、courierUid（可 null）、orderVersion |
+| order.completed | C | D 结算；C 开放评价 | publisherUid、courierUid、amount、baseFee、tip、commissionRateBps、pricingVersion、orderVersion |
+| order.cancelled | C | D 退款；B 大厅投影 | publisherUid、paymentId（未支付 null）、amount、paid、orderVersion |
+| refund.succeeded | D | B | refundId、paymentId、payerUid、amount |
+
+事件与生产者业务变更同一事务写入 outbox；回滚不能留下待发事件。A 提供应用内每秒扫描的轻量投递任务，每批最多 20 条，不引入独立通知进程或消息队列。各消费者使用独立投递记录；一个成功不影响其他消费者的失败重试。SQLite 下以条件更新获得处理租约，租约 60 秒，进程重启后可回收过期租约。数据库中存 attempts、nextAttemptAt、lastError、status、leaseUntil，不只保存在内存中。
+
+首次失败后延迟 1、5、30 秒重试，之后每 30 秒重试；连续失败 10 次进入 dead 状态，保留错误并提供维护命令按原 eventId 重试。业务校验失败与暂时不可用均保留诊断，不无限高速重试，不向客户端假报下游完成。原期望大厅 30 秒内刷新的指标在正常运行下验收；故障期间保留待办，不能宣称已满足时限。
+
+消费者在本地事务内同时保存处理结果与唯一去重记录 (consumer,eventId)。资金消费还需业务唯一约束：paymentRequestId、订单支付成功、订单退款、订单结算、充值回调、提现回补分别至多一次；不能只依赖 eventId 或请求键，换键也不得重复入账。重复投递返回原结果。同事件 ID 内容不同视为冲突。订单状态投影忽略已处理的旧版本，版本有缺口时读取订单所有者快照校准；资金事件不能仅因版本较旧就丢弃，应检查对应业务事实。
+
+HTTP Idempotency-Key 的范围为 (uid,operation,key)，持久化请求摘要、业务 ID 和结果；同键同请求返回原结果，同键不同内容返回 409 IDEMPOTENCY_CONFLICT。新建资源重试保留原 201 和资源 ID。请求仍在处理中返回 409 REQUEST_IN_PROGRESS。课程版保留幂等记录，不自动清理；永久业务唯一约束独立于这些记录。
+
+F2 审核通知仍按既定方案同步写入，不改为异步。C 的取件锁定通知由 C 提供 GET /api/orders/{orderId}/notifications（仅本单相关用户，分页），与锁定事务一起保存；不占用 F2 的认证通知接口。
+
+## 8. 失败语义与验收责任
+
+422：VALIDATION_ERROR / PICKUP_CODE_MISMATCH。401：AUTH_REQUIRED / SESSION_EXPIRED。403：FORBIDDEN / VERIFICATION_REQUIRED / CREDIT_TOO_LOW。404：NOT_FOUND。409：ORDER_CONFLICT / ORDER_LOCKED / PAYMENT_IN_PROGRESS / IDEMPOTENCY_CONFLICT / REQUEST_IN_PROGRESS / ALREADY_REVIEWED。503：DEPENDENCY_UNAVAILABLE。字段错误示例 fields 为 `{tip:"必须为整数分且在允许范围内"}`，所有错误均返回 code、detail、fields；500 不暴露堆栈或 SQL。
+
+模拟模式由启动配置统一确定，返回 demo:true，界面明确提示。模拟用户通过受控演示配置创建；正式模式不得接受演示 Cookie、任意 uid 或演示确认接口。模拟与未来真实实现使用同一字段和单位，不准另造一套“元字符串”接口。
+
+| 负责人 | PR 合并前必须验证 |
+| --- | --- |
+| A | sessionStorage 刷新恢复、401清理/403保留、sid撤销、角色和认证映射；投递失败、重启与多消费者重试 |
+| B | 整数分输入输出、20/100分页、字段裁剪、服务器报价、支付预占与取消竞争、支付成功/失败事件幂等 |
+| C | 两人抢单仅一人成功、接单与取消互斥、版本冲突、三次错误锁定及重试不重复计数、评价去重、新人信用 |
+| D | 并发扣款不透支、重复支付/充值/退款/结算/提现回补不重复记账；事务失败回滚；中断后资金事件可重投 |
+
+公共契约测试与各自功能测试均应通过。现有 B PR #1 即使原 22 项后端与 11 项浏览器测试通过，也须修复整数分、错误结构和分页差异，再按本基线补齐对接；该 PR 尚未合并。实现中发现协议缺陷先向队长说明，再在本文记录版本与影响，不能静默改字段、单位或历史评审记录。
