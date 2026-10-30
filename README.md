@@ -1,8 +1,8 @@
 # 校园快递代取管理系统
 
-四人协作的课程项目。前端使用 Vue 3 + JavaScript + Vue Router + Vite，后端使用 Python + FastAPI，业务持久化计划采用 MySQL。
+四人协作的课程项目。前端使用 Vue 3 + JavaScript + Vue Router + Vite，后端使用 Python + FastAPI，数据库采用 SQLAlchemy 2.0 + SQLite，无需单独安装数据库服务。
 
-当前版本是公共界面骨架：页面导航、示例任务筛选、详情预览和表单校验可用。登录、实名认证、订单、信用与钱包业务尚未实现。界面不保存身份资料、不发送短信，也不产生交易。
+当前版本是公共界面骨架，已配置数据库连接、ORM 基类和会话依赖，暂未定义业务模型或创建数据表。页面导航、示例任务筛选、详情预览和表单校验可用。登录、实名认证、订单、信用与钱包业务尚未实现。界面不保存身份资料、不发送短信，也不产生交易。
 
 ## 启动前端
 
@@ -14,7 +14,7 @@ npm ci
 npm run dev
 ```
 
-打开终端显示的地址，通常为 http://127.0.0.1:5173 。前端可独立预览，不需要先安装 MySQL 或启动后端。
+打开终端显示的地址，通常为 http://127.0.0.1:5173 。前端可独立预览，不需要启动后端。
 
 ```powershell
 npm run build     # 生产构建
@@ -38,6 +38,18 @@ py -3 -m venv .venv
 `requirements.txt` 声明后端直接依赖范围，`requirements.lock.txt` 固定当前验证的依赖版本。所有 Python 包安装在项目 `.venv` 中。前端版本由 `package-lock.json` 固定，使用 `npm ci` 安装。
 
 本机若已安装 Edge，也可用 `$env:PW_BROWSER_CHANNEL='msedge'; npm test` 运行冒烟测试，无需另行下载 Chromium。
+
+## 数据库接入
+
+公共入口为 `backend/app/database.py`，提供 `engine`、`SessionLocal`、`Base` 和 `get_db`。SQLite 使用 Python 自带驱动，数据库路径固定为 `backend/campus_express.db`，不随启动时的工作目录变化。
+
+- 后续业务模型统一继承 `Base`，在各自模块中定义。
+- 同步业务接口通过 `Depends(get_db)` 获取独立的 `Session`；后台任务使用 `with SessionLocal() as session:`，不要跨请求或任务共享会话。
+- 写操作由业务层显式管理事务，例如 `with session.begin():`；会话退出时关闭，未提交的事务会回滚。
+- 当前不调用 `Base.metadata.create_all()`，也没有迁移或自动建表逻辑。仅启动应用不会创建数据库文件，首次实际连接时才会创建空数据库文件。
+- 数据库文件及 SQLite 辅助文件已加入 `.gitignore`，不提交个人运行数据。后续表结构及迁移方案由团队统一后再实现。
+
+连接与会话用法参考 [SQLAlchemy 会话文档](https://docs.sqlalchemy.org/en/20/orm/session_basics.html) 和 [SQLite 方言文档](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)。
 
 ## 分工与目录
 
