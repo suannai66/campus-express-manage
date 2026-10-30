@@ -2,51 +2,68 @@
 
 - v1 走演示路径 POST /api/wallet/recharge/{rechargeId}/confirm，真实渠道回调本期不实现；
 - 余额、流水、业务记录同事务保存（约定第 11 节）；
+- HTTP 幂等（约定第 12 节）：Idempotency-Key 必填，(uid,operation,key) 持久化请求摘要与
+  结果；同键同请求返回原结果，同键不同内容 409 IDEMPOTENCY_CONFLICT（由公共组件
+  app.common.replay/remember 提供）；
 - 渠道差异封装在 channels/ 适配器之后（EV-1），沙箱迭代换适配器不改本流程。
 """
 
 import hashlib
-import uuid
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ....common import remember, replay
 from .. import config
 from ..core import wallet_core
 from ..models import RechargeOrder
 from ..schemas import RechargeRequest, RechargeResponse
 
+OPERATION = "wallet-recharge"
 
-def _new_id(uid: str, idempotency_key: str | None) -> str:
-    """充值单号：请求带 Idempotency-Key 时派生固定单号（重复请求返回同一单），否则随机。"""
-    if idempotency_key:
-        digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
-        return f"RC{digest}"
-    return f"RC{uuid.uuid4().hex[:16]}"
+
+def _new_id(uid: str, idempotency_key: str) -> str:
+    """充值单号：由 (uid, 幂等键) 派生固定单号（重复请求返回同一单，并发同键主键冲突兜底）。"""
+    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
+    return f"RC{digest}"
+
+
+def _create_dict(order: RechargeOrder) -> dict:
+    return {
+        "rechargeId": order.out_trade_no,
+        "amount": order.amount_cent,
+        "status": order.status,
+        "demo": True,
+    }
 
 
 def create_recharge(
-    db: Session, uid: str, request: RechargeRequest, idempotency_key: str | None = None
+    db: Session, uid: str, request: RechargeRequest, idempotency_key: str
 ) -> RechargeResponse:
-    """POST /api/wallet/recharge：创建充值单（pending）。同幂等键重复请求返回原单。"""
-    recharge_id = _new_id(uid, idempotency_key)
+    """POST /api/wallet/recharge：创建充值单（pending），201。
+
+    同幂等键同请求返回首次结果（保留原 201）；同键不同内容由 replay 抛 409。
+    """
+    payload = {"amount": request.amount}
     with db.begin():
+        existing_result = replay(db, uid, OPERATION, idempotency_key, payload)
+        if existing_result is not None:
+            return existing_result
+        recharge_id = _new_id(uid, idempotency_key)
         existing = db.get(RechargeOrder, recharge_id)
         if existing is not None:
-            return RechargeResponse(
-                rechargeId=existing.out_trade_no,
-                amount=existing.amount_cent,
-                status=existing.status,
-            )
-        db.add(
-            RechargeOrder(
-                out_trade_no=recharge_id,
-                uid=uid,
-                amount_cent=request.amount,
-                channel=config.CHANNEL_ACTIVE,
-            )
+            return _create_dict(existing)
+        order = RechargeOrder(
+            out_trade_no=recharge_id,
+            uid=uid,
+            amount_cent=request.amount,
+            channel=config.CHANNEL_ACTIVE,
         )
-    return RechargeResponse(rechargeId=recharge_id, amount=request.amount, status="pending")
+        db.add(order)
+        db.flush()  # 应用 status 默认值；并发同键由主键唯一约束在此拦截（→409）
+        result = _create_dict(order)
+        remember(db, uid, OPERATION, idempotency_key, payload, result)
+        return result
 
 
 def handle_confirm(db: Session, uid: str, recharge_id: str) -> dict | None:
@@ -74,7 +91,6 @@ def handle_confirm(db: Session, uid: str, recharge_id: str) -> dict | None:
         order = db.get(RechargeOrder, recharge_id)
         if order is None or order.uid != uid:
             return None
-        db.rollback()
         return _confirm_dict(order)
 
 

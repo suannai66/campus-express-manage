@@ -5,10 +5,8 @@ import PageHeading from "../../components/PageHeading.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import { request } from "../../services/http";
 
-// TODO(F1 接入后) 开发期占位身份：登录后由统一会话/JWT 提供，此处仅本地演示用。
-// 身份头只在钱包页自己的请求里携带，不修改公共 http.js。
-const uid = "u1";
-
+// 身份凭证由公共 http.js 统一附加（sessionStorage accessToken → Authorization: Bearer），
+// 页面不携带任何 uid（约定：禁止客户端自报身份）。
 const balance = ref(null); // 可用余额（分）
 const transactions = ref(null); // 流水分页结果
 const message = ref("");
@@ -29,7 +27,6 @@ const TYPE_LABELS = {
   settlement: "履约结算",
 };
 const yuan = (cents) => (cents / 100).toFixed(2);
-const authHeaders = () => ({ "X-User-Id": uid });
 
 function openRecharge() {
   rechargeKey.value = crypto.randomUUID();
@@ -49,7 +46,7 @@ function openWithdraw() {
 
 async function loadBalance() {
   try {
-    const data = await request("/wallet", { headers: authHeaders() });
+    const data = await request("/wallet");
     balance.value = data.balance;
   } catch (err) {
     error.value = err.message;
@@ -59,9 +56,7 @@ async function loadBalance() {
 
 async function loadTransactions() {
   try {
-    transactions.value = await request("/wallet/transactions?page=1&pageSize=20", {
-      headers: authHeaders(),
-    });
+    transactions.value = await request("/wallet/transactions?page=1&pageSize=20");
   } catch (err) {
     error.value = err.message;
   }
@@ -84,7 +79,7 @@ async function submitRecharge() {
   try {
     const order = await request("/wallet/recharge", {
       method: "POST",
-      headers: { ...authHeaders(), "Idempotency-Key": rechargeKey.value },
+      headers: { "Idempotency-Key": rechargeKey.value },
       body: JSON.stringify({ amount: cents }),
     });
     cashierOrder.value = order;
@@ -99,7 +94,6 @@ async function confirmPaid() {
   try {
     await request(`/wallet/recharge/${cashierOrder.value.rechargeId}/confirm`, {
       method: "POST",
-      headers: authHeaders(),
     });
     const amount = yuan(cashierOrder.value.amount);
     cashierOrder.value = null;
@@ -121,7 +115,7 @@ async function submitWithdraw() {
   try {
     const order = await request("/wallet/withdraw", {
       method: "POST",
-      headers: { ...authHeaders(), "Idempotency-Key": withdrawKey.value },
+      headers: { "Idempotency-Key": withdrawKey.value },
       body: JSON.stringify({ amount: cents }),
     });
     withdrawOpen.value = false;
@@ -137,9 +131,7 @@ async function pollWithdrawal(withdrawId, cents) {
   for (let i = 0; i < 12; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     try {
-      const order = await request(`/wallet/withdrawals/${withdrawId}`, {
-        headers: authHeaders(),
-      });
+      const order = await request(`/wallet/withdrawals/${withdrawId}`);
       if (order.status === "succeeded") {
         message.value = `提现成功 ¥${yuan(cents)}（模拟渠道已到账）`;
         refreshAll();

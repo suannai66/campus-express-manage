@@ -23,11 +23,14 @@ class WalletResponse(BaseModel):
 
 
 class RechargeRequest(BaseModel):
-    """POST /api/wallet/recharge：发起充值。金额整数 1 ~ 100000（分）。"""
+    """POST /api/wallet/recharge：发起充值。金额整数 1 ~ 100000（分）。
+
+    strict：拒绝布尔、字符串、小数（约定：金额拒绝字符串、小数、布尔值、NaN，返回 422）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    amount: int = Field(ge=1, le=100000, description="充值金额（分）")
+    amount: int = Field(strict=True, ge=1, le=100000, description="充值金额（分）")
 
 
 class RechargeResponse(BaseModel):
@@ -48,11 +51,14 @@ class RechargeConfirmResponse(BaseModel):
 
 
 class WithdrawRequest(BaseModel):
-    """POST /api/wallet/withdraw：申请提现。金额整数 1 ~ 100000 且不超过可用余额。"""
+    """POST /api/wallet/withdraw：申请提现。金额整数 1 ~ 100000 且不超过可用余额。
+
+    strict：拒绝布尔、字符串、小数（约定：金额拒绝字符串、小数、布尔值、NaN，返回 422）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    amount: int = Field(ge=1, le=100000, description="提现金额（分）")
+    amount: int = Field(strict=True, ge=1, le=100000, description="提现金额（分）")
 
 
 class WithdrawResponse(BaseModel):

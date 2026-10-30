@@ -1,49 +1,68 @@
 """F8 提现编排（团队接口约定 v1.1 第 10 节）。
 
 - 申请：校验金额 → 扣可用余额（条件更新）→ 流水与提现记录同事务写入（第 11 节）；
+- HTTP 幂等（第 12 节）：Idempotency-Key 必填，(uid,operation,key) 持久化请求摘要与
+  结果；同键同请求返回原结果，同键不同内容 409 IDEMPOTENCY_CONFLICT（由公共组件
+  app.common.replay/remember 提供）；并发同键由提现单主键/幂等表唯一约束拦截
+  → 409 REQUEST_IN_PROGRESS；
 - 到账：应用后台演示任务最早 3 秒后标记 succeeded，重启后继续处理 processing 记录；
 - 失败：记录 failed，仅一次退回扣除金额（fail_reason 预留，流程后置）。
 """
 
 import hashlib
 import threading
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ....common import remember, replay
 from ....database import SessionLocal
 from .. import config
 from ..core import wallet_core
 from ..models import WithdrawOrder
 from ..schemas import WithdrawRequest, WithdrawResponse
 
+OPERATION = "wallet-withdraw"
 
-def _new_id(uid: str, idempotency_key: str | None) -> str:
-    """提现单号：请求带 Idempotency-Key 时派生固定单号（重复请求返回同一单），否则随机。"""
-    if idempotency_key:
-        digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
-        return f"WD{digest}"
-    return f"WD{uuid.uuid4().hex[:16]}"
+
+def _new_id(uid: str, idempotency_key: str) -> str:
+    """提现单号：由 (uid, 幂等键) 派生固定单号（重复请求返回同一单，并发同键主键冲突兜底）。"""
+    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
+    return f"WD{digest}"
+
+
+def _apply_dict(order: WithdrawOrder) -> dict:
+    return {
+        "withdrawId": order.withdraw_no,
+        "amount": order.amount_cent,
+        "status": order.status,
+    }
 
 
 def apply_withdraw(
-    db: Session, uid: str, request: WithdrawRequest, idempotency_key: str | None = None
+    db: Session, uid: str, request: WithdrawRequest, idempotency_key: str
 ) -> WithdrawResponse:
-    """POST /api/wallet/withdraw：扣款 + 建单同一事务；余额不足抛 InsufficientBalanceError。"""
-    withdraw_id = _new_id(uid, idempotency_key)
+    """POST /api/wallet/withdraw：扣款 + 建单同一事务，201；余额不足抛 InsufficientBalanceError。
+
+    同幂等键同请求返回首次结果（只扣一次）；同键不同内容由 replay 抛 409。
+    """
+    payload = {"amount": request.amount}
     with db.begin():
+        existing_result = replay(db, uid, OPERATION, idempotency_key, payload)
+        if existing_result is not None:
+            return existing_result
+        withdraw_id = _new_id(uid, idempotency_key)
         existing = db.get(WithdrawOrder, withdraw_id)
         if existing is not None:
-            return WithdrawResponse(
-                withdrawId=existing.withdraw_no,
-                amount=existing.amount_cent,
-                status=existing.status,
-            )
+            return _apply_dict(existing)
         wallet_core.debit(db, uid, request.amount, f"{uid}:{withdraw_id}", "withdrawal")
-        db.add(WithdrawOrder(withdraw_no=withdraw_id, uid=uid, amount_cent=request.amount))
-    return WithdrawResponse(withdrawId=withdraw_id, amount=request.amount, status="processing")
+        order = WithdrawOrder(withdraw_no=withdraw_id, uid=uid, amount_cent=request.amount)
+        db.add(order)
+        db.flush()  # 应用 status 默认值；并发同键由主键唯一约束在此拦截（→409）
+        result = _apply_dict(order)
+        remember(db, uid, OPERATION, idempotency_key, payload, result)
+        return result
 
 
 def query_withdrawal(db: Session, uid: str, withdraw_id: str) -> dict | None:
