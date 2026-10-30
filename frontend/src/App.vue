@@ -81,7 +81,11 @@ const navigation = [
         >
       </div>
       <div class="topbar-right">
-        <span class="preview-label">界面预览 · 未连接业务服务</span
+        <span class="preview-label">{{
+          route.path === "/publish"
+            ? `${route.meta.title} · 订单服务`
+            : "界面预览 · 示例数据"
+        }}</span
         ><RouterLink to="/login" class="user-link"
           ><span class="avatar">访</span><span>登录 / 注册</span></RouterLink
         >

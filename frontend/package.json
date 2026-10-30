@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:f3": "playwright test --config playwright.f3.config.js"
   },
   "keywords": [],
   "author": "",
