@@ -1,15 +1,20 @@
 """F3/F4 应用入口与统一错误处理；A/C/D 的业务服务由单体装配注入。"""
 
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .database import Base, engine
 from .common import Idempotency
+from .events import start_processor
+from .events.models import OutboxEvent, Delivery
+from .events.wiring import register_defaults
 from .modules.identity.api import router as identity_router
 from .modules.identity.config import Settings
 from .modules.identity.models import User, Challenge, LoginSession, VerificationState
@@ -35,14 +40,22 @@ async def lifespan(app):
                                           Account.__table__, Ledger.__table__, Payment.__table__, Refund.__table__, FinanceReceipt.__table__, Settlement.__table__,
                                           RechargeOrder.__table__, WithdrawOrder.__table__,
                                           VerificationApplication.__table__, VerificationPhoto.__table__,
-                                          VerificationReview.__table__, VerificationNotification.__table__])
+                                          VerificationReview.__table__, VerificationNotification.__table__,
+                                          OutboxEvent.__table__, Delivery.__table__])
     if not hasattr(app.state, "identity_service"):
         app.state.identity_service = IdentityService(Settings.from_environment())
     if not hasattr(app.state, "pricing_service"):
         app.state.pricing_service = PricingService()
     # 成员 D：提现后台演示任务（团队接口约定 v1.1：≥3 秒标记 succeeded，重启续处理）
     withdraw_service.start_withdraw_processor()
-    yield
+    register_defaults()
+    processor = start_processor(sessionmaker(bind=engine, autoflush=False))
+    app.state.event_processor = processor
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(processor.stop)
+        del app.state.event_processor
 
 
 app = FastAPI(title="校园快递代取管理系统", version="1.1.0", lifespan=lifespan)

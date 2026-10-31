@@ -2,6 +2,7 @@
 from uuid import uuid4
 from sqlalchemy import select
 from ....common import fail, iso, now, remember, replay
+from ....events import publish
 from ...orders.gateway import OrderGateway
 from ..models import Payment
 from ..core import wallet_core
@@ -51,8 +52,10 @@ def prepay(db, uid, request, key):
         }
         row = Payment(id=payment_id, order_id=order.id, request_id=request.paymentRequestId,
                       payer_uid=uid, amount=order.amount, status=status, code=code,
-                      funds_status="frozen" if status == "succeeded" else "none", event=event)
+                      funds_status="frozen" if status == "succeeded" else "none", event=event,
+                      event_status="outbox_saved")
         db.add(row)
+        publish(db, event)
         response = result(row)
         remember(db, uid, "payment-prepay", key, body, response)
         db.flush()
