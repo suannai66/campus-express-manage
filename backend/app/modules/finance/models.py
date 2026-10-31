@@ -4,12 +4,9 @@
 正确性依赖：事务 + ledger 幂等键唯一索引（Q-03/Q-04）；SQLite 写事务串行化，
 无需显式行锁（C-03 修订）。
 
-迭代约定（2026-10-30）：
-- v1 先不实现冻结模型：account 不含 frozen_cent，冻结/结算/解冻/赔付
-  相关的 ledger biz_type 也暂不出现。v1 先跑通「余额 + 充值 + 提现 + 流水」闭环；
-- 后续迭代以「给 account 加 frozen_cent 列」的方式引入下单冻结（FR3），
-  届时同步新增 FREEZE / UNFREEZE / SETTLE / PENALTY 等流水类型，
-  并观察 SQLite 表结构变更对本地开发库的影响（约定：模型变更后删 db 重建）。
+冻结字段：account.frozen_cent 保存冻结金额（整数分），初始为 0，不计入可用余额。
+本次仅增加存储字段，冻结、解冻、支付及其流水编排后续实现。
+已有数据库执行 python -m app.modules.finance.migrate_frozen 升级，保留原有数据。
 """
 
 from datetime import datetime, timezone
@@ -25,7 +22,7 @@ from ...database import Base
 class Account(Base):
     """统一虚拟账户（FR1.2）：用户可同时作为客户与取货员，共用同一账户。
 
-    v1 仅可用余额；frozen_cent 在后续迭代加入（见模块 docstring）。
+    available_cent 为可用余额；frozen_cent 为冻结余额，二者独立存储。
     """
 
     __tablename__ = "account"
@@ -33,6 +30,10 @@ class Account(Base):
     uid: Mapped[str] = mapped_column(String(64), primary_key=True, comment="用户 ID（F1 UID）")
     available_cent: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, comment="可用余额（分），不为负"
+    )
+    frozen_cent: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0",
+        comment="冻结余额（分），不计入可用余额，初始为 0",
     )
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, comment="版本号，审计用途（SQLite 写串行化下不承担并发控制）"
