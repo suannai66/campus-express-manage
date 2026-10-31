@@ -10,6 +10,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .database import Base, engine
 from .common import Idempotency
+from .modules.identity.api import router as identity_router
+from .modules.identity.config import Settings
+from .modules.identity.models import User, Challenge, LoginSession, VerificationState
+from .modules.identity.service import IdentityService
 
 
 from .modules.orders.api import router as orders_router
@@ -20,12 +24,16 @@ from .modules.orders.handlers import EventReceipt, PaymentFact
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine, tables=[Order.__table__, Idempotency.__table__,
-                                          EventReceipt.__table__, PaymentFact.__table__])
+                                          EventReceipt.__table__, PaymentFact.__table__,
+                                          User.__table__, Challenge.__table__,
+                                          LoginSession.__table__, VerificationState.__table__])
+    if not hasattr(app.state, "identity_service"):
+        app.state.identity_service = IdentityService(Settings.from_environment())
     yield
 
 
 app = FastAPI(title="校园快递代取管理系统", version="1.1.0", lifespan=lifespan)
-for router in (orders_router,):
+for router in (orders_router, identity_router):
     app.include_router(router)
 
 
