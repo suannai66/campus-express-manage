@@ -1,12 +1,13 @@
 # Finance 数据库升级
 
 本轮加入 `account.frozen_cent`：整数分、非空、默认 0，独立于可用余额 `available_cent`。
-钱包 HTTP 响应保持团队现有契约；本轮不提供冻结、解冻或支付接口。
+钱包 HTTP 响应保持团队现有契约；支付冻结接口见下文，解冻和结算后续实现。
 
 新数据库使用团队初始化脚本建表。已有数据库在停止应用后，从 `backend` 目录运行：
 
 ```powershell
 ..\.venv\Scripts\python.exe -m app.modules.finance.migrate_frozen
+..\.venv\Scripts\python.exe scripts/init_db.py
 ```
 
 命令使用公共数据库配置（支持 `CAMPUS_DATABASE_PATH`），保留账户余额和流水；
@@ -35,3 +36,20 @@ finance_payments.event 保存团队格式事件，event_status 初始 pending。
 生产代码不直接调用 B 的消费者，不能人工重复发起支付来解除预占。
 后续与 A 对齐公共组件后，应接入其同事务发布能力及投递确认、重试机制。
 本轮不实现取消退款、配送完成结算，也不修改队友的订单/履约业务代码。
+
+## 与 A 的公共事件接口对接（队长已确认，组件尚未实现）
+
+- `app.events.publish(db, event)`：未来在支付用例同一 Session、提交之前调用，
+  只保存 outbox；失败必须连同冻结、流水、支付事实、幂等记录一起回滚。
+- `register_consumer(event_type, consumer_name, handler)`：由 A 在启动入口统一装配；
+  B 的消费者为 `orders.handlers.handle(db, event)`，消费者不得自行提交。
+- 当前不导入不存在的 app.events，不用直接调用 B 或超时解除预占替代投递。
+- 已有支付从 finance_payments.event 读取完整 envelope，复用原 eventId 补录 outbox；
+  不生成新 eventId，不重新冻结或重建支付记录。补录与标记已入 outbox 应同事务进行；
+  event_status=pending 仅表示等待公共接入，不能当作已成功投递。
+- version=1 属于支付聚合，与订单版本无关。
+- 后续结算只消耗冻结资金，不再扣可用余额；允许取消时全额解冻并发布
+  refund.succeeded，原支付状态保留 paid。这两条由队长确认，本轮尚未实现。
+
+成功/失败 envelope 样例见同目录 payment-event-examples.json；均为虚构数据，
+只用于核对字段，不应直接投递到共享数据库。
