@@ -113,3 +113,24 @@ def get_balance(session: Session, uid: str) -> int:
     """余额查询：返回可用余额（分）。账户不存在视为 0（约定：初始为 0）。"""
     account = session.get(Account, uid)
     return account.available_cent if account is not None else 0
+
+
+def freeze(session: Session, uid: str, amount_cent: int, payment_id: str) -> Ledger:
+    """原子转移可用资金到冻结资金；由调用方统一提交，重复业务由支付记录保护。"""
+    if type(amount_cent) is not int or amount_cent <= 0:
+        raise ValueError("冻结金额必须为正整数分")
+    _ensure_account(session, uid)
+    balance = session.execute(
+        update(Account).where(Account.uid == uid, Account.available_cent >= amount_cent)
+        .values(available_cent=Account.available_cent - amount_cent,
+                frozen_cent=Account.frozen_cent + amount_cent,
+                version=Account.version + 1)
+        .returning(Account.available_cent)
+    ).scalar_one_or_none()
+    if balance is None:
+        raise InsufficientBalanceError(uid, amount_cent, get_balance(session, uid))
+    ledger = Ledger(uid=uid, biz_type="payment", delta=-amount_cent,
+                    balance_after=balance, idempotency_key=payment_id)
+    session.add(ledger)
+    session.flush()
+    return ledger

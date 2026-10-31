@@ -19,13 +19,10 @@ def quote(draft: dict) -> dict:
     return PricingService.quote(draft)
 
 
-def prepay(uid: str, request: PrepayRequest) -> PrepayResponse:
-    """余额支付（POST /api/pay/prepay）：同 paymentRequestId 只创建一个支付记录，重试返回原结果。
-
-    成功同步返回 succeeded 并发布 payment.succeeded；确定失败返回 failed（code）并发布 payment.failed。
-    TODO(迭代·冻结) 经只读 OrderGateway 校验预占/发布者/金额，不直接修改订单。
-    """
-    raise NotImplementedError("TODO(迭代·冻结): 实现余额支付")
+def prepay(db, uid: str, request: PrepayRequest, idempotency_key: str) -> PrepayResponse:
+    """顶层支付冻结入口，订单状态通知等待公共投递器接入。"""
+    from .payment import prepay as pay
+    return pay(db, uid, request, idempotency_key)
 
 
 def settle_order(command: SettleCommand) -> None:

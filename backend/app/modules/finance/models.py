@@ -11,7 +11,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Index, text, BigInteger, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...database import Base
@@ -106,3 +106,21 @@ class WithdrawOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
+
+class Payment(Base):
+    """支付事实与待投递事件同事务保存，事件交由 A 的投递组件接入。"""
+    __tablename__ = "finance_payments"
+    __table_args__ = (
+        Index("uq_finance_successful_order", "order_id", unique=True,
+              sqlite_where=text("status = 'succeeded'")),
+    )
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(100), index=True)
+    request_id: Mapped[str] = mapped_column(String(100), unique=True)
+    payer_uid: Mapped[str] = mapped_column(String(100))
+    amount: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(20))
+    code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    funds_status: Mapped[str] = mapped_column(String(20))  # frozen / none；后续 settled/refunded
+    event: Mapped[dict] = mapped_column(JSON)
+    event_status: Mapped[str] = mapped_column(String(20), default="pending")

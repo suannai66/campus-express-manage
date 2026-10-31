@@ -16,8 +16,8 @@ from .modules.identity.models import User, Challenge, LoginSession, Verification
 from .modules.identity.service import IdentityService
 
 from .modules.finance.services.pricing import PricingService
-from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder
-from .modules.finance.routers import wallet
+from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder, Payment
+from .modules.finance.routers import wallet, payment
 from .modules.finance.services import withdraw as withdraw_service
 from .modules.orders.api import router as orders_router
 from .modules.orders.entities import Order
@@ -30,7 +30,7 @@ async def lifespan(app):
                                           EventReceipt.__table__, PaymentFact.__table__,
                                           User.__table__, Challenge.__table__,
                                           LoginSession.__table__, VerificationState.__table__,
-                                          Account.__table__, Ledger.__table__,
+                                          Account.__table__, Ledger.__table__, Payment.__table__,
                                           RechargeOrder.__table__, WithdrawOrder.__table__])
     if not hasattr(app.state, "identity_service"):
         app.state.identity_service = IdentityService(Settings.from_environment())
@@ -42,7 +42,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="校园快递代取管理系统", version="1.1.0", lifespan=lifespan)
-for router in (orders_router, identity_router, wallet.router):
+for router in (orders_router, identity_router, wallet.router, payment.router):
     app.include_router(router)
 
 
