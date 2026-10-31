@@ -20,6 +20,8 @@ from fixtures import TestPricing
 
 class IdentityTests(unittest.TestCase):
     def setUp(self):
+        self.processor_patch = patch("app.modules.finance.services.withdraw.start_withdraw_processor")
+        self.processor_patch.start()
         self.temp = tempfile.TemporaryDirectory()
         self.engine = create_engine(f"sqlite:///{self.temp.name}/identity.db", connect_args={"check_same_thread": False, "timeout": 30})
         self.sessions = sessionmaker(bind=self.engine, autoflush=False)
@@ -41,6 +43,7 @@ class IdentityTests(unittest.TestCase):
         for name in ("identity_service", "pricing_service"):
             if hasattr(main.app.state, name): delattr(main.app.state, name)
         self.engine_patch.stop()
+        self.processor_patch.stop()
         self.engine.dispose()
         self.temp.cleanup()
 

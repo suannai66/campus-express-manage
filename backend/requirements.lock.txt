@@ -10,6 +10,8 @@ opentelemetry-api==1.45.1
 pydantic==2.14.1
 pydantic_core==2.50.1
 PyJWT==2.15.1
+python-multipart==0.0.32
+Pillow==12.3.0
 starlette==1.10.0
 SQLAlchemy==2.0.55
 typing-inspection==0.4.4

@@ -14,6 +14,8 @@ from .modules.identity.api import router as identity_router
 from .modules.identity.config import Settings
 from .modules.identity.models import User, Challenge, LoginSession, VerificationState
 from .modules.identity.service import IdentityService
+from .modules.identity.verification_api import router as verification_router
+from .modules.identity.models import VerificationApplication, VerificationPhoto, VerificationReview, VerificationNotification
 
 from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder
 from .modules.finance.routers import wallet
@@ -30,7 +32,9 @@ async def lifespan(app):
                                           User.__table__, Challenge.__table__,
                                           LoginSession.__table__, VerificationState.__table__,
                                           Account.__table__, Ledger.__table__,
-                                          RechargeOrder.__table__, WithdrawOrder.__table__])
+                                          RechargeOrder.__table__, WithdrawOrder.__table__,
+                                          VerificationApplication.__table__, VerificationPhoto.__table__,
+                                          VerificationReview.__table__, VerificationNotification.__table__])
     if not hasattr(app.state, "identity_service"):
         app.state.identity_service = IdentityService(Settings.from_environment())
     # 成员 D：提现后台演示任务（团队接口约定 v1.1：≥3 秒标记 succeeded，重启续处理）
@@ -39,7 +43,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="校园快递代取管理系统", version="1.1.0", lifespan=lifespan)
-for router in (orders_router, identity_router, wallet.router):
+for router in (orders_router, identity_router, verification_router, wallet.router):
     app.include_router(router)
 
 

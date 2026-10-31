@@ -1,5 +1,5 @@
 """F1 身份事实；F2 当前状态预留，后续审核用例维护此投影。"""
-from sqlalchemy import Boolean, CheckConstraint, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Integer, String, LargeBinary, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...database import Base
@@ -42,3 +42,50 @@ class VerificationState(Base):
     reject_reason: Mapped[str | None] = mapped_column(String(500))
     application_id: Mapped[str] = mapped_column(String(100))
     version: Mapped[int] = mapped_column(Integer)
+
+
+class VerificationApplication(Base):
+    __tablename__ = "identity_verification_applications"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'approved', 'rejected')"),
+        Index("uq_verification_pending_user", "uid", unique=True, sqlite_where=text("status = 'pending'")),
+    )
+    application_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    uid: Mapped[str] = mapped_column(String(100), index=True)
+    real_name: Mapped[str] = mapped_column(String(30))
+    student_no: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    reject_reason: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[str] = mapped_column(String(40))
+    reviewed_at: Mapped[str | None] = mapped_column(String(40))
+    reviewer_uid: Mapped[str | None] = mapped_column(String(100))
+
+
+class VerificationPhoto(Base):
+    __tablename__ = "identity_verification_photos"
+    application_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    content_type: Mapped[str] = mapped_column(String(30))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class VerificationReview(Base):
+    __tablename__ = "identity_verification_reviews"
+    review_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    application_id: Mapped[str] = mapped_column(String(100), unique=True)
+    reviewer_uid: Mapped[str] = mapped_column(String(100))
+    decision: Mapped[str] = mapped_column(String(20))
+    reject_reason: Mapped[str | None] = mapped_column(String(500))
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
+class VerificationNotification(Base):
+    __tablename__ = "identity_verification_notifications"
+    notification_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    application_id: Mapped[str] = mapped_column(String(100), unique=True)
+    uid: Mapped[str] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    reject_reason: Mapped[str | None] = mapped_column(String(500))
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[str] = mapped_column(String(40))

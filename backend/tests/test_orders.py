@@ -19,6 +19,8 @@ from fixtures import TestIdentity, TestPricing
 
 class OrderTests(unittest.TestCase):
     def setUp(self):
+        self.processor_patch = patch("app.modules.finance.services.withdraw.start_withdraw_processor")
+        self.processor_patch.start()
         self.temp = tempfile.TemporaryDirectory()
         self.engine = create_engine(f"sqlite+pysqlite:///{self.temp.name}/orders.db", connect_args={"check_same_thread": False})
         self.sessions = sessionmaker(bind=self.engine)
@@ -36,6 +38,7 @@ class OrderTests(unittest.TestCase):
         for name in ["identity_service", "pricing_service"]:
             if hasattr(main.app.state, name): delattr(main.app.state, name)
         self.engine_patch.stop(); self.engine.dispose(); self.temp.cleanup()
+        self.processor_patch.stop()
     def headers(self, uid="alice", key=None):
         return {"Authorization": "Bearer " + uid, "Idempotency-Key": key or str(uuid4())}
     def create(self, body=None, uid="alice", key=None):

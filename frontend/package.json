@@ -9,7 +9,8 @@
     "test": "playwright test",
     "test:f3": "playwright test --config playwright.f3.config.js",
     "test:orders": "playwright test --config playwright.f3.config.js",
-    "test:identity": "playwright test --config playwright.identity.config.js"
+    "test:identity": "playwright test --config playwright.identity.config.js",
+    "test:verification": "playwright test --config playwright.verification.config.js"
   },
   "keywords": [],
   "author": "",

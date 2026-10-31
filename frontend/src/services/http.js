@@ -15,17 +15,21 @@ export function safeRedirect(value) {
 }
 
 export async function request(path, options = {}) {
+  const { responseType, ...fetchOptions } = options;
   const headers = new Headers(options.headers);
   const token = accessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   const response = await fetch(`/api${path}`, {
-    ...options,
+    ...fetchOptions,
     headers,
     credentials: "same-origin",
   });
-  const data = await response.json().catch(() => null);
+  const data =
+    response.ok && responseType === "blob"
+      ? await response.blob()
+      : await response.json().catch(() => null);
   if (!response.ok) {
     const error = new Error(
       typeof data?.detail === "string"

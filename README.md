@@ -2,7 +2,7 @@
 
 四人协作的课程项目。前端使用 Vue 3 + JavaScript + Vue Router + Vite，后端使用 Python + FastAPI，数据库采用 SQLAlchemy 2.0 + SQLite，无需单独安装数据库服务。
 
-当前已实现 F1 注册、模拟验证码登录、JWT + sid 会话校验、会话恢复与退出，以及 B 的发布/大厅与订单公共能力。F2 当前提供认证状态查询，资料提交、管理员审核和通知仍待实现；报价、支付、履约、信用与钱包按各自模块继续接入。首页部分卡片仍为示例数据，不代表真实订单。本项目不发送真实短信、不产生真实资金交易。
+当前已实现 F1 注册登录与公共鉴权、F2 学生认证提交/审核/通知、B 的发布/大厅与订单公共能力，以及 D 的模拟钱包闭环。报价、订单支付、履约、信用、退款和结算仍需继续接入。首页部分卡片仍为示例数据，不代表真实订单。本项目不发送真实短信、不产生真实资金交易。
 
 ## 启动前端
 
@@ -23,6 +23,7 @@ npx playwright install chromium
 npm test          # 浏览器冒烟测试，自动启动前端服务
 npm run test:identity # 真实账号流程，临时数据库和受控模拟验证码
 npm run test:orders   # F3/F4 测试，A/D 使用隔离测试替身
+npm run test:verification # 真实账号提交、审核、通知与照片权限
 ```
 
 ## 启动后端
@@ -41,7 +42,15 @@ $env:CAMPUS_DEMO_CODE = '482917'
 
 演示流程：打开 `/register`，输入虚构手机号并点击“获取验证码”，输入上述环境配置的验证码注册；注册成功后在登录页重新获取登录验证码并登录。验证码发送间隔 60 秒、有效期 300 秒、连续错误 5 次失效，成功使用后不能重用。模拟验证码仅由受控配置指定，不出现在接口响应或日志中；未配置时获取验证码返回 503。环境变量需在启动后端的同一 PowerShell 窗口设置，项目不会自动加载 `.env`。
 
-登录凭证有效期 1800 秒，仅存 `sessionStorage`；退出只撤销当前会话。新账号认证状态为 `not_submitted`，可浏览大厅，但不能发布或接单。报价服务尚未接入时，已认证用户的报价/创建返回明确的依赖不可用错误，不会生成假报价。不要通过改前端状态绕过认证，F2 资料提交和审核将在下一阶段接入。
+登录凭证有效期 1800 秒，仅存 `sessionStorage`；退出只撤销当前会话。新账号认证状态为 `not_submitted`，可浏览大厅，但不能发布或接单；在 `/verification` 提交虚构姓名、学号和 JPEG/PNG 照片后进入待审核。照片不超过 5 MB、2500 万像素，服务端检查实际图片内容；照片仅由本人或审核管理员通过鉴权接口读取，不生成公开文件链接。驳回后可重提，历史保留；审核通过后身份准入立即生效。报价服务尚未接入时，已认证用户的报价/创建仍返回明确的依赖不可用错误，不会生成假报价。
+
+管理员账号先通过注册页面创建，再由维护者在本机授予角色（不需要重新登录，下次请求立即生效）：
+
+```powershell
+.venv\Scripts\python backend/scripts/设置管理员.py --phone 13900003001 --grant
+```
+
+将手机号替换为已注册的虚构账号。使用 `--revoke` 替代 `--grant` 可恢复普通学生角色。管理员登录后进入 `/admin/verification`，查看申请和受控照片，再通过或填写理由驳回。学生在认证页查看结果、申请历史及通知；待审核时页面每 10 秒刷新一次，可手动刷新。普通注册请求不能设置管理员角色。
 
 开发模式未设置 `CAMPUS_JWT_SECRET` 时，会在忽略提交的 `backend/.local/jwt-secret` 自动生成持久密钥；不要删除该文件，否则既有 Token 会失效。部署正式模式使用 `CAMPUS_MODE=production`，必须另行配置至少 32 字节的随机 `CAMPUS_JWT_SECRET`，并取消演示验证码配置。当前尚无真实短信提供者，正式模式不会启用模拟验证码。
 
@@ -53,7 +62,7 @@ $env:PYTHONPATH = 'backend'
 .venv\Scripts\python -m unittest discover -s backend/tests -v
 ```
 
-测试使用临时 SQLite，不修改开发库；F1 测试包含 20 轮注册、登录、退出与旧凭证拒绝验证，不代表 F2 尚未实现的场景已经验收。
+测试使用临时 SQLite，不修改开发库；F1 测试包含 20 轮注册、登录、退出与旧凭证拒绝验证。F2 关键场景运行 20 轮，覆盖重复提交竞争、重复审核竞争、驳回重提、旧版本拒绝、通知去重及通知写入失败回滚。
 
 `requirements.txt` 声明后端直接依赖范围，`requirements.lock.txt` 固定当前验证的依赖版本。所有 Python 包安装在项目 `.venv` 中。前端版本由 `package-lock.json` 固定，使用 `npm ci` 安装。
 
@@ -90,7 +99,7 @@ $env:PYTHONPATH = 'backend'
 
 金额均为整数分；所有模块使用公共鉴权；数据库统一 SQLAlchemy 2.0 + SQLite。模拟实现也须遵守相同接口。发现问题先向队长反馈，修订契约后同步相关实现。
 
-1. 拉取 `main` 后创建个人功能分支，如 `feat/f1-auth`、`feat/f3-orders`。主分支保留经过验证的基础代码。
+1. 拉取 `main` 后在个人功能分支开发，A 使用 `feature/A`；验证后通过 PR 合并到 `main`。主分支保留经过验证的基础代码。
 2. 优先在自己模块目录实现业务；修改公共样式、路由或应用入口前先与队员沟通。新增组件样式建议使用 Vue 的 `scoped`。
 3. 提交 PR 前运行前端构建及相关测试，由另一位队员评审。不要提交 `.idea`、`.venv`、密钥、真实证件和 `node_modules`。
 4. API 使用 `/api` 前缀。身份接口沿用 `GET /api/auth/current`，认证状态沿用 `GET /api/auth/verify-status`。字段、枚举与错误返回按 v1.1 契约实现。
@@ -100,6 +109,6 @@ $env:PYTHONPATH = 'backend'
 
 ## 页面入口
 
-`/` 首页，`/tasks` 大厅，`/publish` 发布，`/orders` 订单，`/reviews` 信用评价，`/wallet` 钱包，`/login` 登录，`/register` 注册，`/verification` 认证。`/admin/verification` 仅为管理员审核页面占位，不包含任何真实数据或可执行审核操作。管理员鉴权由 F1/F2 接入时落实。
+`/` 首页，`/tasks` 大厅，`/publish` 发布，`/orders` 订单，`/reviews` 信用评价，`/wallet` 钱包，`/login` 登录，`/register` 注册，`/verification` 认证与通知，`/admin/verification` 管理员审核。审核列表、详情及操作均由后端校验管理员角色。
 
 生产部署需将非 `/api` 的前端路由回退到 `index.html`，避免刷新子页面返回 404。框架用法可参考 [Vite 文档](https://vite.dev/guide/) 与 [Vue Router 文档](https://router.vuejs.org/guide/)。
