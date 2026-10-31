@@ -1,4 +1,5 @@
 // F1 统一凭证由请求入口附加；F3/F4 不持有独立登录状态。
+import { accessToken, clearSession } from "./auth-state";
 export function safeRedirect(value) {
   if (
     typeof value !== "string" ||
@@ -15,7 +16,7 @@ export function safeRedirect(value) {
 
 export async function request(path, options = {}) {
   const headers = new Headers(options.headers);
-  const token = sessionStorage.getItem("accessToken");
+  const token = accessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
@@ -34,8 +35,8 @@ export async function request(path, options = {}) {
     error.status = response.status;
     error.code = data?.code;
     error.fields = data?.fields || {};
-    if (response.status === 401) {
-      sessionStorage.removeItem("accessToken");
+    if (response.status === 401 && accessToken() === token) {
+      clearSession();
       if (!["/login", "/register"].includes(location.pathname)) {
         const redirect = safeRedirect(location.pathname + location.search);
         window.location.assign(

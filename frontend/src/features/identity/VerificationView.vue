@@ -1,7 +1,25 @@
 <script setup>
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { ShieldCheck } from "@lucide/vue";
 import PageHeading from "../../components/PageHeading.vue";
+import { request } from "../../services/http";
+const verification = ref(null),
+  statusError = ref("");
+const labels = {
+  not_submitted: "未提交认证",
+  pending: "待审核",
+  approved: "认证已通过",
+  rejected: "认证已驳回",
+};
+async function loadStatus() {
+  statusError.value = "";
+  try {
+    verification.value = await request("/auth/verify-status");
+  } catch (cause) {
+    statusError.value = cause.message;
+  }
+}
+onMounted(loadStatus);
 const name = ref(""),
   number = ref(""),
   error = ref(""),
@@ -34,8 +52,15 @@ function submit() {
     eyebrow="STUDENT VERIFICATION"
   />
   <div class="notice">
-    请先登录后提交认证。当前仅预览表单，资料不会上传或保存。
+    当前可查询认证状态；资料提交与审核功能暂未开放，下方资料不会上传或保存。
   </div>
+  <p v-if="statusError" role="alert" class="notice">
+    {{ statusError }}
+    <button class="text-button" @click="loadStatus">重试查询</button>
+  </p>
+  <p v-if="verification?.rejectReason" role="status" class="notice">
+    驳回理由：{{ verification.rejectReason }}
+  </p>
   <section class="panel form-panel">
     <div class="verification-banner">
       <span class="quick-icon mint"><ShieldCheck /></span>
@@ -43,7 +68,9 @@ function submit() {
         <h2>学生身份认证</h2>
         <p class="muted">提交资料 → 管理员审核 → 查看结果</p>
       </div>
-      <span class="soft-tag">尚未查询认证状态</span>
+      <span class="soft-tag">{{
+        verification ? labels[verification.status] : "尚未查询认证状态"
+      }}</span>
     </div>
     <form @submit.prevent="submit">
       <div class="form-grid">
