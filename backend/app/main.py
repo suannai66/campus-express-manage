@@ -15,7 +15,9 @@ from .modules.identity.config import Settings
 from .modules.identity.models import User, Challenge, LoginSession, VerificationState
 from .modules.identity.service import IdentityService
 
-
+from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder
+from .modules.finance.routers import wallet
+from .modules.finance.services import withdraw as withdraw_service
 from .modules.orders.api import router as orders_router
 from .modules.orders.entities import Order
 from .modules.orders.handlers import EventReceipt, PaymentFact
@@ -26,14 +28,18 @@ async def lifespan(app):
     Base.metadata.create_all(engine, tables=[Order.__table__, Idempotency.__table__,
                                           EventReceipt.__table__, PaymentFact.__table__,
                                           User.__table__, Challenge.__table__,
-                                          LoginSession.__table__, VerificationState.__table__])
+                                          LoginSession.__table__, VerificationState.__table__,
+                                          Account.__table__, Ledger.__table__,
+                                          RechargeOrder.__table__, WithdrawOrder.__table__])
     if not hasattr(app.state, "identity_service"):
         app.state.identity_service = IdentityService(Settings.from_environment())
+    # 成员 D：提现后台演示任务（团队接口约定 v1.1：≥3 秒标记 succeeded，重启续处理）
+    withdraw_service.start_withdraw_processor()
     yield
 
 
 app = FastAPI(title="校园快递代取管理系统", version="1.1.0", lifespan=lifespan)
-for router in (orders_router, identity_router):
+for router in (orders_router, identity_router, wallet.router):
     app.include_router(router)
 
 
