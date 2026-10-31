@@ -1,0 +1,34 @@
+{
+  "success": {
+    "eventId": "00000000-0000-4000-8000-000000000001",
+    "type": "payment.succeeded",
+    "occurredAt": "2026-10-31T08:00:00.000000Z",
+    "orderId": "demo-order-success",
+    "aggregateType": "payment",
+    "aggregateId": "00000000-0000-4000-8000-000000000002",
+    "version": 1,
+    "payload": {
+      "paymentId": "00000000-0000-4000-8000-000000000002",
+      "paymentRequestId": "demo-reservation-success",
+      "payerUid": "demo-publisher",
+      "amount": 535,
+      "code": null
+    }
+  },
+  "failure": {
+    "eventId": "00000000-0000-4000-8000-000000000003",
+    "type": "payment.failed",
+    "occurredAt": "2026-10-31T08:00:00.000000Z",
+    "orderId": "demo-order-failed",
+    "aggregateType": "payment",
+    "aggregateId": "00000000-0000-4000-8000-000000000004",
+    "version": 1,
+    "payload": {
+      "paymentId": "00000000-0000-4000-8000-000000000004",
+      "paymentRequestId": "demo-reservation-failed",
+      "payerUid": "demo-publisher",
+      "amount": 535,
+      "code": "INSUFFICIENT_BALANCE"
+    }
+  }
+}

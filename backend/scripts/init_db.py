@@ -4,8 +4,8 @@
     .venv\\Scripts\\python backend/scripts/init_db.py
 
 - create_all 只创建缺失的表，重复执行安全；
-- 修改模型后（如加列）请先删除 backend/campus_express.db 再重跑本脚本，
-  本地开发数据可丢弃（团队迭代约定，2026-10-30）；
+- create_all 不升级已有列；冻结字段须先按 finance/README.md 执行无损升级，
+  不要删除含有团队账号、认证、订单和余额的共享数据库；
 - 数据库文件已被 .gitignore 排除，不提交个人运行数据。
 """
 

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import config, iso_utc
-from .models import Ledger
+from .models import Ledger, Payment
 
 
 def query_transactions(
@@ -46,6 +46,9 @@ def query_transactions(
     rows = db.scalars(
         stmt.order_by(Ledger.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).all()
+    payment_orders = dict(db.execute(select(Payment.id, Payment.order_id).where(
+        Payment.id.in_([row.idempotency_key for row in rows if row.biz_type == "payment"])
+    )).all())
     return {
         "items": [
             {
@@ -54,7 +57,7 @@ def query_transactions(
                 "direction": "in" if row.delta > 0 else "out",
                 "amount": abs(row.delta),
                 "balanceAfter": row.balance_after,
-                "orderId": None,  # v1 仅有钱包类流水；订单资金流后续迭代补齐
+                "orderId": payment_orders.get(row.idempotency_key) if row.biz_type == "payment" else None,
                 "referenceId": row.idempotency_key,
                 "createdAt": iso_utc(row.created_at),
             }
