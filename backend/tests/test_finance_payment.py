@@ -60,7 +60,7 @@ class PaymentTests(unittest.TestCase):
         self.assertEqual(page["items"][0]["orderId"], body["orderId"])
         with self.fixture.sessions.begin() as db:
             row = db.get(Payment, first.json()["paymentId"])
-            self.assertEqual((row.funds_status, row.event_status), ("frozen", "pending"))
+            self.assertEqual((row.funds_status, row.event_status), ("frozen", "outbox_saved"))
             handle(db, row.event)  # 验证 B 能消费真实事件；仅测试直接调用。
         self.assertEqual(self.fixture.get("/api/orders/" + body["orderId"]).json()["status"], "pending")
 

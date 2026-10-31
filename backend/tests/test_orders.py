@@ -19,6 +19,9 @@ from fixtures import TestIdentity, TestPricing
 
 class OrderTests(unittest.TestCase):
     def setUp(self):
+        self.events_patch = patch("app.main.start_processor")
+        self.events_patch.start()
+        self.addCleanup(self.events_patch.stop)
         self.processor_patch = patch("app.modules.finance.services.withdraw.start_withdraw_processor")
         self.processor_patch.start()
         self.temp = tempfile.TemporaryDirectory()

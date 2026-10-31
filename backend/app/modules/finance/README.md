@@ -1,7 +1,7 @@
 # Finance 数据库升级
 
 本轮加入 `account.frozen_cent`：整数分、非空、默认 0，独立于可用余额 `available_cent`。
-钱包 HTTP 响应保持团队现有契约；支付冻结接口见下文，解冻和结算后续实现。
+钱包 HTTP 响应保持团队现有契约；支付冻结、取消解冻和配送结算已实现，事件统一接入公共 outbox。
 
 新数据库使用团队初始化脚本建表。已有数据库在停止应用后，从 `backend` 目录运行：
 
@@ -27,29 +27,27 @@
 支付冻结流水对外使用既有 `payment` 类型，并返回实际关联的 orderId。
 已有数据库先升级 frozen_cent，再运行团队初始化脚本创建 finance_payments 表。
 
-### 事件接入限制
+### 公共事件接入
 
-finance_payments.event 保存团队格式事件，event_status 初始 pending。
-这是支付事实附带的待投递数据，不是公共 outbox 或完整的重试投递器。
-当前没有自动投递任务，支付响应 succeeded 仅表示资金已冻结；订单会保持 paying，
-直至 A 的公共组件将该事件投递至 B 的 orders.handlers.handle。
-生产代码不直接调用 B 的消费者，不能人工重复发起支付来解除预占。
-后续与 A 对齐公共组件后，应接入其同事务发布能力及投递确认、重试机制。
-本轮不实现取消退款、配送完成结算，也不修改队友的订单/履约业务代码。
+finance_payments.event 保留原始完整事件。新支付在资金业务事务内调用
+app.events.publish(db, event)，event_status=outbox_saved 表示已入公共 outbox，
+不表示 B 已消费。后台任务每秒扫描并投递至 B，B 成功提交后订单才由 paying→paid。
+消费者失败不会重新冻结或将成功付款改为失败；生产代码不直接调用 B 的消费者。
 
-## 与 A 的公共事件接口对接（队长已确认，组件尚未实现）
+## 公共接口与历史事件补录
 
-- `app.events.publish(db, event)`：未来在支付用例同一 Session、提交之前调用，
+- `app.events.publish(db, event)`：已在支付/退款用例同一 Session、提交之前调用，
   只保存 outbox；失败必须连同冻结、流水、支付事实、幂等记录一起回滚。
 - `register_consumer(event_type, consumer_name, handler)`：由 A 在启动入口统一装配；
   B 的消费者为 `orders.handlers.handle(db, event)`，消费者不得自行提交。
-- 当前不导入不存在的 app.events，不用直接调用 B 或超时解除预占替代投递。
-- 已有支付从 finance_payments.event 读取完整 envelope，复用原 eventId 补录 outbox；
+- app.events 已实现；不用直接调用 B 或超时解除预占替代投递。
+- 后台对 pending 的历史支付/退款读取完整 envelope，复用原 eventId 补录 outbox；
   不生成新 eventId，不重新冻结或重建支付记录。补录与标记已入 outbox 应同事务进行；
-  event_status=pending 仅表示等待公共接入，不能当作已成功投递。
+  event_status=pending 仅表示尚未入箱，outbox_saved 也不能当作已成功投递。
 - version=1 属于支付聚合，与订单版本无关。
-- 后续结算只消耗冻结资金，不再扣可用余额；允许取消时全额解冻并发布
-  refund.succeeded，原支付状态保留 paid。这两条由队长确认，本轮尚未实现。
+- 结算只消耗冻结资金，不再扣可用余额；允许取消时全额解冻并发布
+  refund.succeeded，原支付状态保留 paid。实际投递状态见 outbox_deliveries。
+- 重试、租约、dead 维护命令及 C 的对接职责统一见根目录 docs/团队接口约定.md 第 12 节。
 
 成功/失败 envelope 样例见同目录 payment-event-examples.json；均为虚构数据，
 只用于核对字段，不应直接投递到共享数据库。
@@ -65,11 +63,11 @@ finance_payments.event 保存团队格式事件，event_status 初始 pending。
 frozen→refunded，并将全部冻结金额转回可用余额；同事务保存 refund 流水、
 finance_refunds 退款记录和 finance_event_receipts 去重回执。
 订单和支付维度的唯一约束保证换 eventId 也不重复退款；已结算资金不能退款。
-本轮未实现结算端，未来结算也必须通过 frozen 状态条件更新与退款互斥。
+结算端也通过 frozen 状态条件更新与退款互斥。
 
-退款表保存完整 refund.succeeded envelope、稳定 eventId 和 pending 状态，
-等待 A 的公共 outbox 接入。届时必须在同一消费事务内调用 publish，
-不能只存退款记录就认为事件已投递。B 消费后更新 refundStatus，原 paymentStatus 保留 paid。
+退款表保存完整 refund.succeeded envelope、稳定 eventId 和 outbox_saved 标记，
+在同一消费事务内调用 publish；退款、流水、回执、下游事件与本次投递确认一起提交。
+B 消费后更新 refundStatus，原 paymentStatus 保留 paid。历史 pending 退款只补录，不重新退款。
 
 新增 finance_refunds、finance_event_receipts 均为新表，无旧表删改。
 停止应用并备份共享库后，从 backend 运行：
@@ -98,7 +96,8 @@ finance_settlements 独立保存客户冻结消耗、取件员收入、平台佣
 同订单、同支付各最多一笔结算，换 eventId 仍返回原结算；同 eventId 不同内容返回冲突。
 资金更新、取件员流水、结算审计、消费回执必须同事务提交或回滚。
 没有新增 settlement.succeeded 事件（团队契约未定义），也不直接修改 C/B 的订单状态。
-当前公共事件投递器仍未实现，尚未自动接收配送事件，真实联调等待 A/C。
+公共投递器已注册此消费者；C 交付实际完结业务入口并同事务发布 order.completed 后即可投递。
+C 自己的评价订阅尚未装配时单独保留重试，不影响已成功的资金结算。
 
 本轮只新增 finance_settlements 表。停止应用、备份共享库后，从 backend 执行
 `..\.venv\Scripts\python.exe scripts/init_db.py` 即可无损创建新表；
@@ -116,5 +115,5 @@ finance_settlements 独立保存客户冻结消耗、取件员收入、平台佣
 - 模拟旧共享库，保存身份、认证、会话、订单、账户、流水数据后升级，
   检查原有行保留，并验证升级后可正常支付和退款。
 
-这些测试验证本地资金及消费者事务；公共 outbox 和 C 的真实生产投递仍待联调，
-不将测试中的直接消费者调用算作生产自动投递完成。
+资金专项测试验证本地资金及消费者事务；公共事件联调另见 tests/test_events.py、
+tests/test_events_integration.py。C 的生产业务入口仍待其交付，不能将测试内的网关动作算作已交付接口。

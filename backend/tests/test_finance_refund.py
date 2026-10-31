@@ -61,7 +61,7 @@ class RefundTests(unittest.TestCase):
         self.assertEqual(self.helper.balances(), (1000, 0))
         with self.fixture.sessions.begin() as db:
             row = db.get(Refund, first["refundId"])
-            self.assertEqual(row.event_status, "pending")
+            self.assertEqual(row.event_status, "outbox_saved")
             self.assertEqual(db.get(Payment, row.payment_id).funds_status, "refunded")
             self.assertEqual(db.scalar(select(func.count()).select_from(Refund)), 1)
             handle(db, row.event)

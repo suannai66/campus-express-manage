@@ -51,6 +51,92 @@ async function submitUI(page, name) {
   await expect(page.getByText("待审核", { exact: true }).first()).toBeVisible();
 }
 
+test("真实认证用户支付后经公共投递器自动发布，重试不重复扣款", async ({
+  page,
+  request,
+}) => {
+  const user = await student(request),
+    admin = await credentials(request, "13900999998");
+  const auth = { Authorization: `Bearer ${user.accessToken}` };
+  const keyed = () => ({ ...auth, "Idempotency-Key": crypto.randomUUID() });
+  const application = await request.post(
+    "/api/auth/verification-applications",
+    {
+      headers: auth,
+      multipart: {
+        realName: "事件联调学生",
+        studentNo: "202600123456",
+        photo: {
+          name: "sample.png",
+          mimeType: "image/png",
+          buffer: readFileSync(fixture),
+        },
+      },
+    },
+  );
+  expect(application.status()).toBe(201);
+  const review = await request.post(
+    `/api/admin/verification-applications/${(await application.json()).applicationId}/review`,
+    {
+      headers: { Authorization: `Bearer ${admin.accessToken}` },
+      data: { decision: "approved", rejectReason: null, version: 1 },
+    },
+  );
+  expect(review.status()).toBe(200);
+  const recharge = await request.post("/api/wallet/recharge", {
+    headers: keyed(),
+    data: { amount: 1000 },
+  });
+  expect(recharge.status()).toBe(201);
+  expect(
+    (
+      await request.post(
+        `/api/wallet/recharge/${(await recharge.json()).rechargeId}/confirm`,
+        { headers: keyed() },
+      )
+    ).status(),
+  ).toBe(200);
+  await use(page, user, "/publish");
+  await page.getByLabel(/快递公司/).fill("中通快递");
+  await page.getByLabel(/^取件点/).selectOption("station_cainiao");
+  await page.getByLabel(/^取件码/).fill("A-1234");
+  await page.getByLabel(/送达区域/).selectOption("zone_qinyuan");
+  await page.getByLabel(/详细送达地址/).fill("测试楼101");
+  await page
+    .getByLabel(/期望送达时间/)
+    .fill(new Date(Date.now() + 11 * 3600000).toISOString().slice(0, 16));
+  await page.getByLabel(/小费金额/).fill("2.35");
+  await expect(page.locator(".fee-total")).toContainText("4.35");
+  await page.getByRole("button", { name: "创建订单", exact: true }).click();
+  await expect(page.locator(".order-result")).toBeVisible();
+  await page.getByRole("button", { name: /去支付/ }).click();
+  const paymentRequest = page.waitForRequest(
+    (req) => new URL(req.url()).pathname === "/api/pay/prepay",
+  );
+  await page.getByRole("button", { name: "确认支付", exact: true }).click();
+  const body = (await paymentRequest).postDataJSON();
+  await expect(page.locator(".order-result .soft-tag")).toHaveText("待接单", {
+    timeout: 10000,
+  });
+  const replay = await request.post("/api/pay/prepay", {
+    headers: keyed(),
+    data: body,
+  });
+  expect(replay.status()).toBe(200);
+  expect((await replay.json()).status).toBe("succeeded");
+  expect(
+    (await (await request.get("/api/wallet", { headers: auth })).json())
+      .balance,
+  ).toBe(565);
+  const transactions = await request.get(
+    "/api/wallet/transactions?type=payment",
+    { headers: auth },
+  );
+  expect((await transactions.json()).total).toBe(1);
+  await page.reload();
+  await expect(page.locator(".order-result .soft-tag")).toHaveText("待接单");
+});
+
 test("提交、驳回、重提、通过与订单准入闭环", async ({
   page,
   request,

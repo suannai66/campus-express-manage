@@ -11,8 +11,9 @@ original_lifespan = app.router.lifespan_context
 async def lifespan(application):
     async with original_lifespan(application):
         with SessionLocal.begin() as db:
-            if not db.get(User, "verification-test-admin"):
-                db.add(User(uid="verification-test-admin", phone="13900999999", role="admin", nickname="演示审核员"))
+            for uid, phone in (("verification-test-admin", "13900999999"), ("outbox-test-admin", "13900999998")):
+                if not db.get(User, uid):
+                    db.add(User(uid=uid, phone=phone, role="admin", nickname="演示审核员"))
         yield
 
 

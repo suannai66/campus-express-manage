@@ -2,6 +2,7 @@
 from uuid import uuid4
 from sqlalchemy import select
 from ....common import fail, iso, now
+from ....events import publish
 from ...orders.gateway import OrderGateway
 from ..models import Payment, Refund
 from ..core.wallet_core import release_payment
@@ -37,6 +38,8 @@ def refund_order(db, command):
              "payload": {"refundId": refund_id, "paymentId": payment.id,
                          "payerUid": payment.payer_uid, "amount": payment.amount}}
     db.add(Refund(id=refund_id, order_id=order.id, payment_id=payment.id,
-                  payer_uid=payment.payer_uid, amount=payment.amount, event=event))
+                  payer_uid=payment.payer_uid, amount=payment.amount, event=event,
+                  event_status="outbox_saved"))
+    publish(db, event)
     db.flush()
     return {"orderId": order.id, "refundId": refund_id, "refunded": True}
