@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { auth, restoreSession, logout } from "./services/session";
 import {
@@ -34,7 +34,7 @@ async function signOut() {
   }
 }
 const open = ref(false);
-const navigation = [
+const navigation = computed(() => [
   { to: "/", label: "首页概览", icon: LayoutDashboard },
   { to: "/tasks", label: "代取大厅", icon: Compass },
   { to: "/publish", label: "发布代取", icon: Plus },
@@ -42,7 +42,10 @@ const navigation = [
   { to: "/reviews", label: "评价与信用", icon: Star },
   { to: "/wallet", label: "我的钱包", icon: Wallet },
   { to: "/verification", label: "学生认证", icon: ShieldCheck },
-];
+  ...(auth.user?.role === "admin"
+    ? [{ to: "/admin/verification", label: "认证审核", icon: ShieldCheck }]
+    : []),
+]);
 </script>
 <template>
   <a class="skip" href="#main">跳到主要内容</a>
@@ -99,8 +102,13 @@ const navigation = [
       </div>
       <div class="topbar-right">
         <span class="preview-label">{{
-          ["/login", "/register"].includes(route.path)
-            ? "账号服务"
+          [
+            "/login",
+            "/register",
+            "/verification",
+            "/admin/verification",
+          ].includes(route.path)
+            ? "身份认证服务"
             : ["/publish", "/tasks"].includes(route.path)
               ? `${route.meta.title} · 订单服务`
               : "界面预览 · 示例数据"
