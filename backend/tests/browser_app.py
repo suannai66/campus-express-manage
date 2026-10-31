@@ -29,8 +29,8 @@ def pay(body: dict, user=Depends(current_identity), db: Session = Depends(get_db
     db.commit()
     return {"paymentId": payment_id, "orderId": order.id, "amount": order.amount, "status": "succeeded", "code": None}
 
-# FastAPI 的 include_router 可保留嵌套路由；测试替身端点显式置前，避免命中真实 F1。
+# FastAPI 的 include_router 可保留嵌套路由；A/D 测试替身端点显式置前。
 # 此模块只由 F3/F4 测试启动，生产入口不导入。
-paths = {'/api/auth/current', '/api/auth/verify-status'}
+paths = {'/api/auth/current', '/api/auth/verify-status', '/api/pay/prepay'}
 overrides = [route for route in app.router.routes if getattr(route, 'path', '') in paths]
 app.router.routes[:] = overrides + [route for route in app.router.routes if route not in overrides]

@@ -35,3 +35,12 @@ LEDGER_PAGE_SIZE_MAX = _env_int("FIN_LEDGER_PAGE_SIZE_MAX", 100)
 # ---- 资金写入金额上限（团队接口约定 v1.1：整数 1 ~ 100000 分） ----
 AMOUNT_MIN_CENT = 1
 AMOUNT_MAX_CENT = 100000
+# 团队 v1.1 演示报价；修改费率时必须同步更新版本。
+PRICING_VERSION = "demo-20261030-v1"
+ROUTE_FEES = {
+    "station_cainiao": {"zone_qinyuan": 200, "zone_zhuyuan": 300, "zone_public": 200},
+    "station_sf": {"zone_qinyuan": 300, "zone_zhuyuan": 200, "zone_public": 200},
+}
+SIZE_FEES = {"small": 0, "medium": 100, "large": 300}
+EXTRA_KG_FEE = 100
+QUOTE_VALID_SECONDS = 300
