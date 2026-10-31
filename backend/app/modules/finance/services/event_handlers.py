@@ -1,24 +1,110 @@
-"""资金侧事件消费者（团队接口约定 v1.1 第 12 节）。
-
-事件经 A 提供的持久化 outbox 投递（应用内轻量投递任务，不引 MQ），本模块实现消费处理器：
-- order.completed → 结算：按订单快照（pricingVersion/commissionRateBps）结算，
-  取件员入账 + 平台佣金留账（约定：佣金仅对 baseFee 计，小费全归取件员）；
-- order.cancelled → 退款：全额退回发布者钱包，不收佣金（refundStatus 由 B 消费 refund.succeeded 流转）。
-
-消费者纪律：
-- 本地事务内同时保存处理结果与唯一去重记录 (consumer,eventId)；
-- 业务唯一约束：订单结算、订单退款各至多一次，换键也不得重复入账；
-- 资金事件不能仅因版本较旧就丢弃，应检查对应业务事实。
-
-TODO(迭代·冻结) 冻结字段（v2）与 OrderGateway 接入后实现。
-"""
+"""资金消费者，handler(db, event) 共享投递方事务，不提交、不直接回调订单模块。"""
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+from pydantic import Field, ValidationError
+from sqlalchemy import select
+from ....common import Input, fail, fingerprint
+from ..models import FinanceReceipt
+from ..core.event_acl import cancelled_to_command
+from .refund import refund_order
 
 
-def on_order_completed(event: dict) -> None:
-    """消费 order.completed：结算（取货员入账 + 平台佣金留账）。"""
-    raise NotImplementedError("TODO(迭代·结算): 消费订单完结事件")
+class Cancellation(Input):
+    publisherUid: str = Field(min_length=1, max_length=100)
+    paymentId: str | None = Field(min_length=1, max_length=100)
+    amount: int = Field(strict=True, gt=0)
+    paid: bool = Field(strict=True)
+    orderVersion: int = Field(strict=True, gt=0)
 
 
-def on_order_cancelled(event: dict) -> None:
-    """消费 order.cancelled：退款（全额退回发布者钱包，不收佣金）。"""
-    raise NotImplementedError("TODO(迭代·退款): 消费订单取消事件")
+class CancelEnvelope(Input):
+    eventId: UUID
+    type: Literal["order.cancelled"]
+    occurredAt: datetime
+    orderId: str = Field(min_length=1, max_length=100)
+    aggregateType: Literal["order"]
+    aggregateId: str = Field(min_length=1, max_length=100)
+    version: int = Field(strict=True, gt=0)
+    payload: Cancellation
+
+
+def on_order_cancelled(db, event: dict) -> dict:
+    try:
+        data = CancelEnvelope.model_validate(event)
+    except ValidationError:
+        fail(422, "VALIDATION_ERROR", "取消事件格式不合法")
+    if (data.occurredAt.tzinfo is None or data.aggregateId != data.orderId
+            or data.payload.orderVersion != data.version
+            or data.payload.paid != (data.payload.paymentId is not None)):
+        fail(422, "VALIDATION_ERROR", "取消事件时间、聚合或支付标识不合法")
+    event_id = str(data.eventId)
+    digest = fingerprint(event)
+    receipt = db.scalar(select(FinanceReceipt).where(
+        FinanceReceipt.consumer == "finance", FinanceReceipt.event_id == event_id))
+    if receipt:
+        if receipt.digest != digest:
+            fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
+        return receipt.result
+    from ...orders.gateway import OrderGateway
+    order = OrderGateway.get_snapshot(db, data.orderId)
+    if data.version > order.version:
+        fail(409, "ORDER_CONFLICT", "取消事件版本超前于订单事实")
+    result = refund_order(db, cancelled_to_command(event))
+    db.add(FinanceReceipt(id=f"finance:{event_id}", consumer="finance", event_id=event_id,
+                          digest=digest, result=result))
+    db.flush()
+    return result
+
+
+class Completion(Input):
+    publisherUid: str = Field(min_length=1, max_length=100)
+    courierUid: str = Field(min_length=1, max_length=100)
+    amount: int = Field(strict=True, gt=0)
+    baseFee: int = Field(strict=True, ge=0)
+    tip: int = Field(strict=True, ge=0)
+    commissionRateBps: int = Field(strict=True, ge=0, le=10000)
+    pricingVersion: str = Field(min_length=1, max_length=100)
+    orderVersion: int = Field(strict=True, gt=0)
+
+
+class CompleteEnvelope(Input):
+    eventId: UUID
+    type: Literal["order.completed"]
+    occurredAt: datetime
+    orderId: str = Field(min_length=1, max_length=100)
+    aggregateType: Literal["order"]
+    aggregateId: str = Field(min_length=1, max_length=100)
+    version: int = Field(strict=True, gt=0)
+    payload: Completion
+
+
+def on_order_completed(db, event: dict):
+    from ..core.event_acl import completed_to_command
+    from ...orders.gateway import OrderGateway
+    from .settlement import settle_order
+    try:
+        data = CompleteEnvelope.model_validate(event)
+    except ValidationError:
+        fail(422, "VALIDATION_ERROR", "完结事件格式不合法")
+    if (data.occurredAt.tzinfo is None or data.aggregateId != data.orderId
+            or data.version != data.payload.orderVersion
+            or data.payload.amount != data.payload.baseFee + data.payload.tip):
+        fail(422, "VALIDATION_ERROR", "完结事件时间、聚合或金额不合法")
+    event_id, digest = str(data.eventId), fingerprint(event)
+    receipt = db.scalar(select(FinanceReceipt).where(
+        FinanceReceipt.consumer == "finance", FinanceReceipt.event_id == event_id))
+    if receipt:
+        if receipt.digest != digest:
+            fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
+        return receipt.result
+    order = OrderGateway.get_snapshot(db, data.orderId)
+    if data.version > order.version:
+        fail(409, "ORDER_CONFLICT", "完结事件版本超前于订单事实")
+    if (data.payload.pricingVersion != order.pricing_version or data.payload.tip != order.tip):
+        fail(409, "ORDER_CONFLICT", "完结事件费率版本或小费与订单不一致")
+    result = settle_order(db, completed_to_command(event))
+    db.add(FinanceReceipt(id=f"finance:{event_id}", consumer="finance", event_id=event_id,
+                          digest=digest, result=result))
+    db.flush()
+    return result

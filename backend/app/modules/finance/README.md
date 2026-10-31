@@ -53,3 +53,68 @@ finance_payments.event 保存团队格式事件，event_status 初始 pending。
 
 成功/失败 envelope 样例见同目录 payment-event-examples.json；均为虚构数据，
 只用于核对字段，不应直接投递到共享数据库。
+
+## 取消解冻消费者
+
+由 A 注册 `order.cancelled` → consumer_name=`finance` →
+`app.modules.finance.services.event_handlers.on_order_cancelled(db, event)`。
+消费者只使用传入 Session，不提交、不新开事务；投递方须在异常时回滚。
+严格校验完整 envelope、事件摘要、取消事实、发布者、支付 ID 与金额。
+
+未支付取消只保存消费回执，不移动资金。已支付取消以条件更新将支付资金状态
+frozen→refunded，并将全部冻结金额转回可用余额；同事务保存 refund 流水、
+finance_refunds 退款记录和 finance_event_receipts 去重回执。
+订单和支付维度的唯一约束保证换 eventId 也不重复退款；已结算资金不能退款。
+本轮未实现结算端，未来结算也必须通过 frozen 状态条件更新与退款互斥。
+
+退款表保存完整 refund.succeeded envelope、稳定 eventId 和 pending 状态，
+等待 A 的公共 outbox 接入。届时必须在同一消费事务内调用 publish，
+不能只存退款记录就认为事件已投递。B 消费后更新 refundStatus，原 paymentStatus 保留 paid。
+
+新增 finance_refunds、finance_event_receipts 均为新表，无旧表删改。
+停止应用并备份共享库后，从 backend 运行：
+
+```powershell
+..\.venv\Scripts\python.exe scripts/init_db.py
+```
+
+此前尚未升级 frozen_cent 的库仍须先执行上文冻结字段升级命令。
+现有余额、订单、认证、流水均保留。不新增匿名退款 HTTP 接口。
+
+## 配送完成结算
+
+A 在公共事件组件中注册 `order.completed` → consumer_name=`finance` →
+`app.modules.finance.services.event_handlers.on_order_completed(db, event)`。
+消费者使用投递方 Session，不自行提交。校验已送达订单、付款人、取件员、
+成功支付事实、金额、基础费、小费与费率版本；不得从事件覆盖订单快照。
+
+平台佣金 = 订单 base_fee × 订单 commission_bps // 10000；
+取件员收益 = amount - 佣金，小费全部归取件员。使用订单快照，不读取最新费率结算历史订单。
+以 Payment.funds_status 的 frozen→settled 条件更新与退款 frozen→refunded 互斥。
+消耗客户冻结资金，不再扣客户可用余额；取件员收益写 settlement 流水。
+finance_settlements 独立保存客户冻结消耗、取件员收入、平台佣金及费率快照作为审计，
+平台佣金可汇总该表，不伪造学生 UID 或占用用户钱包记录平台资金。
+
+同订单、同支付各最多一笔结算，换 eventId 仍返回原结算；同 eventId 不同内容返回冲突。
+资金更新、取件员流水、结算审计、消费回执必须同事务提交或回滚。
+没有新增 settlement.succeeded 事件（团队契约未定义），也不直接修改 C/B 的订单状态。
+当前公共事件投递器仍未实现，尚未自动接收配送事件，真实联调等待 A/C。
+
+本轮只新增 finance_settlements 表。停止应用、备份共享库后，从 backend 执行
+`..\.venv\Scripts\python.exe scripts/init_db.py` 即可无损创建新表；
+此前未添加 frozen_cent 的库先运行冻结字段升级命令。
+
+## 交易专项验收
+
+专项测试位于 tests/test_finance_trade_audit.py，使用隔离临时数据库：
+
+- 同一客户三笔支付，一笔退款、一笔结算，第三笔保持原冻结额；
+  全部账户可用额与冻结额加平台佣金等于最初充值额。
+- 错用另一订单的支付 ID 拒绝解冻，不移动任何资金。
+- 在资金核心同时争用同一笔支付执行退款和结算，只有一方成功，另一方冲突。
+- 超前于数据库订单版本的取消/完结事件拒绝处理；合法旧事件不按版本简单丢弃。
+- 模拟旧共享库，保存身份、认证、会话、订单、账户、流水数据后升级，
+  检查原有行保留，并验证升级后可正常支付和退款。
+
+这些测试验证本地资金及消费者事务；公共 outbox 和 C 的真实生产投递仍待联调，
+不将测试中的直接消费者调用算作生产自动投递完成。

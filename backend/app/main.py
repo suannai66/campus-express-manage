@@ -18,7 +18,7 @@ from .modules.identity.verification_api import router as verification_router
 from .modules.identity.models import VerificationApplication, VerificationPhoto, VerificationReview, VerificationNotification
 
 from .modules.finance.services.pricing import PricingService
-from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder, Payment
+from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder, Payment, Refund, FinanceReceipt, Settlement
 from .modules.finance.routers import wallet, payment
 from .modules.finance.services import withdraw as withdraw_service
 from .modules.orders.api import router as orders_router
@@ -32,7 +32,7 @@ async def lifespan(app):
                                           EventReceipt.__table__, PaymentFact.__table__,
                                           User.__table__, Challenge.__table__,
                                           LoginSession.__table__, VerificationState.__table__,
-                                          Account.__table__, Ledger.__table__, Payment.__table__,
+                                          Account.__table__, Ledger.__table__, Payment.__table__, Refund.__table__, FinanceReceipt.__table__, Settlement.__table__,
                                           RechargeOrder.__table__, WithdrawOrder.__table__,
                                           VerificationApplication.__table__, VerificationPhoto.__table__,
                                           VerificationReview.__table__, VerificationNotification.__table__])

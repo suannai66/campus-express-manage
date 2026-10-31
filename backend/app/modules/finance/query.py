@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import config, iso_utc
-from .models import Ledger, Payment
+from .models import Ledger, Payment, Refund, Settlement
 
 
 def query_transactions(
@@ -49,6 +49,13 @@ def query_transactions(
     payment_orders = dict(db.execute(select(Payment.id, Payment.order_id).where(
         Payment.id.in_([row.idempotency_key for row in rows if row.biz_type == "payment"])
     )).all())
+    refund_orders = dict(db.execute(select(Refund.id, Refund.order_id).where(
+        Refund.id.in_([row.idempotency_key for row in rows if row.biz_type == "refund"])
+    )).all())
+    settlement_orders = dict(db.execute(select(Settlement.id, Settlement.order_id).where(
+        Settlement.id.in_([row.idempotency_key for row in rows if row.biz_type == "settlement"])
+    )).all())
+    order_maps = {"payment": payment_orders, "refund": refund_orders, "settlement": settlement_orders}
     return {
         "items": [
             {
@@ -57,7 +64,7 @@ def query_transactions(
                 "direction": "in" if row.delta > 0 else "out",
                 "amount": abs(row.delta),
                 "balanceAfter": row.balance_after,
-                "orderId": payment_orders.get(row.idempotency_key) if row.biz_type == "payment" else None,
+                "orderId": order_maps.get(row.biz_type, {}).get(row.idempotency_key),
                 "referenceId": row.idempotency_key,
                 "createdAt": iso_utc(row.created_at),
             }

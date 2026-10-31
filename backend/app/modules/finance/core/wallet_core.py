@@ -20,7 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from ..models import Account, Ledger
+from ..models import Account, Ledger, Payment
 
 
 class InsufficientBalanceError(Exception):
@@ -134,3 +134,47 @@ def freeze(session: Session, uid: str, amount_cent: int, payment_id: str) -> Led
     session.add(ledger)
     session.flush()
     return ledger
+
+
+def release_payment(session: Session, payment: Payment, refund_id: str) -> Ledger:
+    """只释放指定支付的冻结额，状态条件更新与资金、流水处于调用方事务。"""
+    from ....common import fail
+    changed = session.execute(update(Payment).where(
+        Payment.id == payment.id, Payment.status == "succeeded", Payment.funds_status == "frozen"
+    ).values(funds_status="refunded"))
+    if changed.rowcount != 1:
+        fail(409, "ORDER_CONFLICT", "支付资金已退款、已结算或未冻结")
+    balance = session.execute(update(Account).where(
+        Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount
+    ).values(available_cent=Account.available_cent + payment.amount,
+             frozen_cent=Account.frozen_cent - payment.amount,
+             version=Account.version + 1).returning(Account.available_cent)).scalar_one_or_none()
+    if balance is None:
+        fail(409, "ORDER_CONFLICT", "冻结资金不足，无法解冻")
+    ledger = Ledger(uid=payment.payer_uid, biz_type="refund", delta=payment.amount,
+                    balance_after=balance, idempotency_key=refund_id)
+    session.add(ledger)
+    session.flush()
+    return ledger
+
+
+def settle_payment(session: Session, payment: Payment, courier_uid: str,
+                   income_cent: int, settlement_id: str):
+    """原子消耗指定支付冻结资金，并给取件员入账；平台份额由结算审计留账。"""
+    from ....common import fail
+    if (type(income_cent) is not int or not 0 <= income_cent <= payment.amount
+            or not courier_uid or courier_uid == payment.payer_uid):
+        fail(409, "ORDER_CONFLICT", "结算收款人或金额无效")
+    changed = session.execute(update(Payment).where(
+        Payment.id == payment.id, Payment.status == "succeeded", Payment.funds_status == "frozen"
+    ).values(funds_status="settled"))
+    if changed.rowcount != 1:
+        fail(409, "ORDER_CONFLICT", "支付资金已结算、已退款或未冻结")
+    changed = session.execute(update(Account).where(
+        Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount
+    ).values(frozen_cent=Account.frozen_cent - payment.amount, version=Account.version + 1))
+    if changed.rowcount != 1:
+        fail(409, "ORDER_CONFLICT", "冻结资金不足，无法结算")
+    # 0 收益允许存在（100% 佣金且无小费），仍在 Settlement 中完整留账。
+    if income_cent:
+        credit(session, courier_uid, income_cent, settlement_id, "settlement")
