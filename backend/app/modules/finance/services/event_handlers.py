@@ -53,5 +53,52 @@ def on_order_cancelled(db, event: dict) -> dict:
     return result
 
 
+class Completion(Input):
+    publisherUid: str = Field(min_length=1, max_length=100)
+    courierUid: str = Field(min_length=1, max_length=100)
+    amount: int = Field(strict=True, gt=0)
+    baseFee: int = Field(strict=True, ge=0)
+    tip: int = Field(strict=True, ge=0)
+    commissionRateBps: int = Field(strict=True, ge=0, le=10000)
+    pricingVersion: str = Field(min_length=1, max_length=100)
+    orderVersion: int = Field(strict=True, gt=0)
+
+
+class CompleteEnvelope(Input):
+    eventId: UUID
+    type: Literal["order.completed"]
+    occurredAt: datetime
+    orderId: str = Field(min_length=1, max_length=100)
+    aggregateType: Literal["order"]
+    aggregateId: str = Field(min_length=1, max_length=100)
+    version: int = Field(strict=True, gt=0)
+    payload: Completion
+
+
 def on_order_completed(db, event: dict):
-    raise NotImplementedError("TODO(迭代·结算): 消费订单完结事件")
+    from ..core.event_acl import completed_to_command
+    from ...orders.gateway import OrderGateway
+    from .settlement import settle_order
+    try:
+        data = CompleteEnvelope.model_validate(event)
+    except ValidationError:
+        fail(422, "VALIDATION_ERROR", "完结事件格式不合法")
+    if (data.occurredAt.tzinfo is None or data.aggregateId != data.orderId
+            or data.version != data.payload.orderVersion
+            or data.payload.amount != data.payload.baseFee + data.payload.tip):
+        fail(422, "VALIDATION_ERROR", "完结事件时间、聚合或金额不合法")
+    event_id, digest = str(data.eventId), fingerprint(event)
+    receipt = db.scalar(select(FinanceReceipt).where(
+        FinanceReceipt.consumer == "finance", FinanceReceipt.event_id == event_id))
+    if receipt:
+        if receipt.digest != digest:
+            fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
+        return receipt.result
+    order = OrderGateway.get_snapshot(db, data.orderId)
+    if (data.payload.pricingVersion != order.pricing_version or data.payload.tip != order.tip):
+        fail(409, "ORDER_CONFLICT", "完结事件费率版本或小费与订单不一致")
+    result = settle_order(db, completed_to_command(event))
+    db.add(FinanceReceipt(id=f"finance:{event_id}", consumer="finance", event_id=event_id,
+                          digest=digest, result=result))
+    db.flush()
+    return result

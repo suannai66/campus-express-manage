@@ -80,3 +80,26 @@ finance_refunds 退款记录和 finance_event_receipts 去重回执。
 
 此前尚未升级 frozen_cent 的库仍须先执行上文冻结字段升级命令。
 现有余额、订单、认证、流水均保留。不新增匿名退款 HTTP 接口。
+
+## 配送完成结算
+
+A 在公共事件组件中注册 `order.completed` → consumer_name=`finance` →
+`app.modules.finance.services.event_handlers.on_order_completed(db, event)`。
+消费者使用投递方 Session，不自行提交。校验已送达订单、付款人、取件员、
+成功支付事实、金额、基础费、小费与费率版本；不得从事件覆盖订单快照。
+
+平台佣金 = 订单 base_fee × 订单 commission_bps // 10000；
+取件员收益 = amount - 佣金，小费全部归取件员。使用订单快照，不读取最新费率结算历史订单。
+以 Payment.funds_status 的 frozen→settled 条件更新与退款 frozen→refunded 互斥。
+消耗客户冻结资金，不再扣客户可用余额；取件员收益写 settlement 流水。
+finance_settlements 独立保存客户冻结消耗、取件员收入、平台佣金及费率快照作为审计，
+平台佣金可汇总该表，不伪造学生 UID 或占用用户钱包记录平台资金。
+
+同订单、同支付各最多一笔结算，换 eventId 仍返回原结算；同 eventId 不同内容返回冲突。
+资金更新、取件员流水、结算审计、消费回执必须同事务提交或回滚。
+没有新增 settlement.succeeded 事件（团队契约未定义），也不直接修改 C/B 的订单状态。
+当前公共事件投递器仍未实现，尚未自动接收配送事件，真实联调等待 A/C。
+
+本轮只新增 finance_settlements 表。停止应用、备份共享库后，从 backend 执行
+`..\.venv\Scripts\python.exe scripts/init_db.py` 即可无损创建新表；
+此前未添加 frozen_cent 的库先运行冻结字段升级命令。

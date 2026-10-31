@@ -25,9 +25,10 @@ def prepay(db, uid: str, request: PrepayRequest, idempotency_key: str) -> Prepay
     return pay(db, uid, request, idempotency_key)
 
 
-def settle_order(command: SettleCommand) -> None:
-    """order.completed 结算：按订单快照结算，取货员入账 + 平台佣金留账（仅 baseFee 计佣）。"""
-    raise NotImplementedError("TODO(迭代·结算): 实现结算编排")
+def settle_order(db, command: SettleCommand):
+    """按订单快照消费冻结额；消费者共享事务，不提交。"""
+    from .settlement import settle_order as settle
+    return settle(db, command)
 
 
 def refund_order(db, command: RefundCommand):

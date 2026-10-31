@@ -146,3 +146,20 @@ class FinanceReceipt(Base):
     event_id: Mapped[str] = mapped_column(String(100))
     digest: Mapped[str] = mapped_column(String(64))
     result: Mapped[dict] = mapped_column(JSON)
+
+
+class Settlement(Base):
+    """订单资金结算及平台佣金审计；客户冻结额只消耗一次。"""
+    __tablename__ = "finance_settlements"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(100), unique=True)
+    payment_id: Mapped[str] = mapped_column(String(100), unique=True)
+    publisher_uid: Mapped[str] = mapped_column(String(100))
+    courier_uid: Mapped[str] = mapped_column(String(100))
+    amount: Mapped[int] = mapped_column(BigInteger)
+    base_fee: Mapped[int] = mapped_column(BigInteger)
+    commission_bps: Mapped[int] = mapped_column(Integer)
+    commission: Mapped[int] = mapped_column(BigInteger)
+    income: Mapped[int] = mapped_column(BigInteger)
+    pricing_version: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

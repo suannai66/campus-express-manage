@@ -39,10 +39,12 @@ class RefundCommand:
     amount_cent: int
 
 
-def completed_to_command(payload) -> SettleCommand:
-    """外部 order.completed 事件 → 结算命令。幂等键 <orderId>:settle。"""
-    # TODO(迭代·结算) 按约定第 12 节 payload 字段映射；金额以订单快照为准（Q-05）
-    raise NotImplementedError("TODO(迭代·结算): 实现完结事件映射")
+def completed_to_command(event) -> SettleCommand:
+    body = event["payload"]
+    return SettleCommand(idempotency_key=f"{event['orderId']}:settle", order_id=event["orderId"],
+                         publisher_uid=body["publisherUid"], courier_uid=body["courierUid"],
+                         amount_cent=body["amount"], base_fee_cent=body["baseFee"],
+                         commission_rate_bps=body["commissionRateBps"])
 
 
 def cancelled_to_command(event) -> RefundCommand:
