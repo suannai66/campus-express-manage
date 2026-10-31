@@ -30,6 +30,7 @@ def settle_order(command: SettleCommand) -> None:
     raise NotImplementedError("TODO(迭代·结算): 实现结算编排")
 
 
-def refund_order(command: RefundCommand) -> None:
-    """order.cancelled 退款：全额退回发布者钱包，不收佣金。"""
-    raise NotImplementedError("TODO(迭代·退款): 实现退款编排")
+def refund_order(db, command: RefundCommand):
+    """共享事务内执行全额解冻，不自行提交。"""
+    from .refund import refund_order as refund
+    return refund(db, command)

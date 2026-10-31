@@ -124,3 +124,25 @@ class Payment(Base):
     funds_status: Mapped[str] = mapped_column(String(20))  # frozen / none；后续 settled/refunded
     event: Mapped[dict] = mapped_column(JSON)
     event_status: Mapped[str] = mapped_column(String(20), default="pending")
+
+
+class Refund(Base):
+    """每订单、每支付最多退款一次，保存原始待发布事件。"""
+    __tablename__ = "finance_refunds"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(100), unique=True)
+    payment_id: Mapped[str] = mapped_column(String(100), unique=True)
+    payer_uid: Mapped[str] = mapped_column(String(100))
+    amount: Mapped[int] = mapped_column(BigInteger)
+    event: Mapped[dict] = mapped_column(JSON)
+    event_status: Mapped[str] = mapped_column(String(20), default="pending")
+
+
+class FinanceReceipt(Base):
+    __tablename__ = "finance_event_receipts"
+    __table_args__ = (UniqueConstraint("consumer", "event_id"),)
+    id: Mapped[str] = mapped_column(String(150), primary_key=True)
+    consumer: Mapped[str] = mapped_column(String(30))
+    event_id: Mapped[str] = mapped_column(String(100))
+    digest: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict] = mapped_column(JSON)

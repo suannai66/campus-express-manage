@@ -53,3 +53,30 @@ finance_payments.event 保存团队格式事件，event_status 初始 pending。
 
 成功/失败 envelope 样例见同目录 payment-event-examples.json；均为虚构数据，
 只用于核对字段，不应直接投递到共享数据库。
+
+## 取消解冻消费者
+
+由 A 注册 `order.cancelled` → consumer_name=`finance` →
+`app.modules.finance.services.event_handlers.on_order_cancelled(db, event)`。
+消费者只使用传入 Session，不提交、不新开事务；投递方须在异常时回滚。
+严格校验完整 envelope、事件摘要、取消事实、发布者、支付 ID 与金额。
+
+未支付取消只保存消费回执，不移动资金。已支付取消以条件更新将支付资金状态
+frozen→refunded，并将全部冻结金额转回可用余额；同事务保存 refund 流水、
+finance_refunds 退款记录和 finance_event_receipts 去重回执。
+订单和支付维度的唯一约束保证换 eventId 也不重复退款；已结算资金不能退款。
+本轮未实现结算端，未来结算也必须通过 frozen 状态条件更新与退款互斥。
+
+退款表保存完整 refund.succeeded envelope、稳定 eventId 和 pending 状态，
+等待 A 的公共 outbox 接入。届时必须在同一消费事务内调用 publish，
+不能只存退款记录就认为事件已投递。B 消费后更新 refundStatus，原 paymentStatus 保留 paid。
+
+新增 finance_refunds、finance_event_receipts 均为新表，无旧表删改。
+停止应用并备份共享库后，从 backend 运行：
+
+```powershell
+..\.venv\Scripts\python.exe scripts/init_db.py
+```
+
+此前尚未升级 frozen_cent 的库仍须先执行上文冻结字段升级命令。
+现有余额、订单、认证、流水均保留。不新增匿名退款 HTTP 接口。

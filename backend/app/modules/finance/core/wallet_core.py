@@ -20,7 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from ..models import Account, Ledger
+from ..models import Account, Ledger, Payment
 
 
 class InsufficientBalanceError(Exception):
@@ -131,6 +131,28 @@ def freeze(session: Session, uid: str, amount_cent: int, payment_id: str) -> Led
         raise InsufficientBalanceError(uid, amount_cent, get_balance(session, uid))
     ledger = Ledger(uid=uid, biz_type="payment", delta=-amount_cent,
                     balance_after=balance, idempotency_key=payment_id)
+    session.add(ledger)
+    session.flush()
+    return ledger
+
+
+def release_payment(session: Session, payment: Payment, refund_id: str) -> Ledger:
+    """只释放指定支付的冻结额，状态条件更新与资金、流水处于调用方事务。"""
+    from ....common import fail
+    changed = session.execute(update(Payment).where(
+        Payment.id == payment.id, Payment.status == "succeeded", Payment.funds_status == "frozen"
+    ).values(funds_status="refunded"))
+    if changed.rowcount != 1:
+        fail(409, "ORDER_CONFLICT", "支付资金已退款、已结算或未冻结")
+    balance = session.execute(update(Account).where(
+        Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount
+    ).values(available_cent=Account.available_cent + payment.amount,
+             frozen_cent=Account.frozen_cent - payment.amount,
+             version=Account.version + 1).returning(Account.available_cent)).scalar_one_or_none()
+    if balance is None:
+        fail(409, "ORDER_CONFLICT", "冻结资金不足，无法解冻")
+    ledger = Ledger(uid=payment.payer_uid, biz_type="refund", delta=payment.amount,
+                    balance_after=balance, idempotency_key=refund_id)
     session.add(ledger)
     session.flush()
     return ledger

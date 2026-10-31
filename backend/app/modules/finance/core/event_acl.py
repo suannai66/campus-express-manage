@@ -45,7 +45,9 @@ def completed_to_command(payload) -> SettleCommand:
     raise NotImplementedError("TODO(迭代·结算): 实现完结事件映射")
 
 
-def cancelled_to_command(payload) -> RefundCommand:
-    """外部 order.cancelled 事件 → 退款命令。幂等键 <orderId>:refund。"""
-    # TODO(迭代·退款) 按约定第 12 节 payload 字段映射
-    raise NotImplementedError("TODO(迭代·退款): 实现取消事件映射")
+def cancelled_to_command(event) -> RefundCommand:
+    """完整且已验证的 order.cancelled envelope 映射为退款命令。"""
+    body = event["payload"]
+    return RefundCommand(idempotency_key=f"{event['orderId']}:refund",
+                         order_id=event["orderId"], publisher_uid=body["publisherUid"],
+                         payment_id=body["paymentId"], amount_cent=body["amount"])
