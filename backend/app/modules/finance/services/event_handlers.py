@@ -46,6 +46,10 @@ def on_order_cancelled(db, event: dict) -> dict:
         if receipt.digest != digest:
             fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
         return receipt.result
+    from ...orders.gateway import OrderGateway
+    order = OrderGateway.get_snapshot(db, data.orderId)
+    if data.version > order.version:
+        fail(409, "ORDER_CONFLICT", "取消事件版本超前于订单事实")
     result = refund_order(db, cancelled_to_command(event))
     db.add(FinanceReceipt(id=f"finance:{event_id}", consumer="finance", event_id=event_id,
                           digest=digest, result=result))
@@ -95,6 +99,8 @@ def on_order_completed(db, event: dict):
             fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
         return receipt.result
     order = OrderGateway.get_snapshot(db, data.orderId)
+    if data.version > order.version:
+        fail(409, "ORDER_CONFLICT", "完结事件版本超前于订单事实")
     if (data.payload.pricingVersion != order.pricing_version or data.payload.tip != order.tip):
         fail(409, "ORDER_CONFLICT", "完结事件费率版本或小费与订单不一致")
     result = settle_order(db, completed_to_command(event))
