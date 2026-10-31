@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....common import remember, replay
+from .transaction import wallet_transaction
 from .. import config
 from ..core import wallet_core
 from ..models import RechargeOrder
@@ -45,7 +46,7 @@ def create_recharge(
     同幂等键同请求返回首次结果（保留原 201）；同键不同内容由 replay 抛 409。
     """
     payload = {"amount": request.amount}
-    with db.begin():
+    with wallet_transaction(db):
         existing_result = replay(db, uid, OPERATION, idempotency_key, payload)
         if existing_result is not None:
             return existing_result
@@ -66,32 +67,43 @@ def create_recharge(
         return result
 
 
-def handle_confirm(db: Session, uid: str, recharge_id: str) -> dict | None:
+def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str) -> dict | None:
     """POST /api/wallet/recharge/{rechargeId}/confirm：幂等入账，与充值单状态更新同一事务。
 
     重复 confirm 返回首次结果；充值单不存在或非本人返回 None（路由转 404）。
     """
     try:
-        with db.begin():
+        with wallet_transaction(db):
+            payload = {"rechargeId": recharge_id}
+            previous = replay(db, uid, "wallet-recharge-confirm", idempotency_key, payload)
+            if previous is not None:
+                return previous
             order = db.get(RechargeOrder, recharge_id)
             if order is None or order.uid != uid:
                 return None
             if order.status == "succeeded":
-                return _confirm_dict(order)  # 重复 confirm：直接返回首次结果
+                result = _confirm_dict(order)
+                remember(db, uid, "wallet-recharge-confirm", idempotency_key, payload, result)
+                return result
             # 入账（唯一索引兜底）+ 更新充值单，同一事务（约定：余额/流水/业务记录同事务）
             wallet_core.credit(
                 db, order.uid, order.amount_cent, f"{order.channel}:{recharge_id}", "recharge"
             )
             order.status = "succeeded"
             order.channel_txn_id = f"MOCK-{recharge_id}"
-            return _confirm_dict(order)
+            result = _confirm_dict(order)
+            remember(db, uid, "wallet-recharge-confirm", idempotency_key, payload, result)
+            return result
     except IntegrityError:
-        # 并发重复 confirm：唯一索引拦截后，读取已提交的首次结果
+        # Only replay a committed matching request. Other constraint failures must
+        # remain conflicts; never turn an unrelated database error into success.
         db.rollback()
-        order = db.get(RechargeOrder, recharge_id)
-        if order is None or order.uid != uid:
-            return None
-        return _confirm_dict(order)
+        result = replay(db, uid, "wallet-recharge-confirm", idempotency_key,
+                        {"rechargeId": recharge_id})
+        if result is not None:
+            return result
+        raise
+
 
 
 def _confirm_dict(order: RechargeOrder) -> dict:

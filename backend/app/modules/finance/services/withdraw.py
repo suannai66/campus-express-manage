@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ....common import remember, replay
+from .transaction import wallet_transaction
 from ....database import SessionLocal
 from .. import config
 from ..core import wallet_core
@@ -48,7 +49,7 @@ def apply_withdraw(
     同幂等键同请求返回首次结果（只扣一次）；同键不同内容由 replay 抛 409。
     """
     payload = {"amount": request.amount}
-    with db.begin():
+    with wallet_transaction(db):
         existing_result = replay(db, uid, OPERATION, idempotency_key, payload)
         if existing_result is not None:
             return existing_result

@@ -42,7 +42,13 @@ class WalletTests(unittest.TestCase):
                 yield session
 
         main.app.dependency_overrides[get_db] = session_dependency
-        main.app.state.identity_service = TestIdentity()
+        class DatabaseIdentity(TestIdentity):
+            def current(self, request, db):
+                from sqlalchemy import select
+                db.execute(select(Account.uid).limit(1))
+                return super().current(request, db)
+
+        main.app.state.identity_service = DatabaseIdentity()
         self.client = TestClient(main.app).__enter__()
 
     def tearDown(self):
@@ -72,7 +78,7 @@ class WalletTests(unittest.TestCase):
 
     def confirm(self, recharge_id, uid="alice"):
         return self.client.post(
-            f"/api/wallet/recharge/{recharge_id}/confirm", headers=self.headers(uid)
+            f"/api/wallet/recharge/{recharge_id}/confirm", headers=self.headers(uid, "confirm-" + recharge_id)
         )
 
     def withdraw(self, amount, uid="alice", key=None):
@@ -89,6 +95,70 @@ class WalletTests(unittest.TestCase):
         """充值并 confirm，使账户有余额。"""
         order = self.recharge(amount, uid).json()
         self.assertEqual(self.confirm(order["rechargeId"], uid).json()["status"], "succeeded")
+
+    def test_confirm_requires_key(self):
+        order = self.recharge(100).json()
+        response = self.client.post(f"/api/wallet/recharge/{order['rechargeId']}/confirm", headers=self.headers())
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.balance(), 0)
+
+    def test_query_validation(self):
+        for query in ("page=0", "pageSize=101", "pageSize=0", "unknown=1"):
+            self.assertEqual(self.client.get("/api/wallet/transactions?" + query, headers=self.headers()).status_code, 422)
+
+    def test_transaction_time_is_utc(self):
+        from datetime import datetime, timezone
+        before = datetime.now(timezone.utc)
+        self.fund(100)
+        item = self.client.get("/api/wallet/transactions", headers=self.headers()).json()["items"][0]
+        self.assertGreaterEqual(datetime.fromisoformat(item["createdAt"].replace("Z", "+00:00")), before)
+
+    def test_confirm_key_cannot_target_another_recharge(self):
+        first, second = [self.recharge(100).json()["rechargeId"] for _ in range(2)]
+        headers = self.headers(key="shared-confirm-key")
+        self.assertEqual(self.client.post(f"/api/wallet/recharge/{first}/confirm", headers=headers).status_code, 200)
+        conflict = self.client.post(f"/api/wallet/recharge/{second}/confirm", headers=headers)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_CONFLICT")
+        self.assertEqual(self.balance(), 100)
+
+    def test_confirm_new_keys_do_not_credit_twice(self):
+        order = self.recharge(100).json()["rechargeId"]
+        for key in ("confirm-key-one", "confirm-key-two"):
+            response = self.client.post(f"/api/wallet/recharge/{order}/confirm", headers=self.headers(key=key))
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.balance(), 100)
+
+    def test_confirm_other_user_cannot_credit(self):
+        order = self.recharge(100).json()["rechargeId"]
+        self.assertEqual(self.confirm(order, "bob").status_code, 404)
+        self.assertEqual(self.balance(), 0)
+        self.assertEqual(self.balance("bob"), 0)
+
+    def test_confirm_failure_rolls_back_balance_ledger_and_status(self):
+        from app.modules.finance.models import Ledger, RechargeOrder
+        from sqlalchemy import select, func
+        order = self.recharge(100).json()["rechargeId"]
+        original = wallet_core.credit
+        def failing_credit(*args, **kwargs):
+            original(*args, **kwargs)
+            raise RuntimeError("injected failure after ledger flush")
+        with patch.object(wallet_core, "credit", side_effect=failing_credit):
+            with self.assertRaises(RuntimeError):
+                self.confirm(order)
+        with self.sessions() as db:
+            self.assertEqual(db.get(RechargeOrder, order).status, "pending")
+            self.assertEqual(db.scalar(select(func.count()).select_from(Ledger)), 0)
+        self.assertEqual(self.balance(), 0)
+        self.assertEqual(self.confirm(order).status_code, 200)
+        self.assertEqual(self.balance(), 100)
+
+    def test_concurrent_withdrawals_cannot_overdraw(self):
+        self.fund(1000)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(lambda _: self.withdraw(700).status_code, range(2)))
+        self.assertEqual(sorted(statuses), [201, 422])
+        self.assertEqual(self.balance(), 300)
 
     # ---- 余额守恒与并发 ----
 

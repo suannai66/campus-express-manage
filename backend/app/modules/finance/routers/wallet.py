@@ -8,7 +8,7 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from ....common import Key, fail
@@ -57,13 +57,13 @@ def recharge_create(
 
 @router.post("/recharge/{recharge_id}/confirm", response_model=RechargeConfirmResponse)
 def recharge_confirm(
-    recharge_id: str, db: Session = Depends(get_db), user=Depends(current)
+    recharge_id: str, idempotency_key: Key, db: Session = Depends(get_db), user=Depends(current)
 ) -> RechargeConfirmResponse:
     """POST /api/wallet/recharge/{rechargeId}/confirm：演示专用确认入账（幂等）。
 
     真实渠道回调本期不实现（约定 v1.1）；关闭演示模式时本接口应返回 404（后续迭代）。
     """
-    result = recharge_service.handle_confirm(db, user.uid, recharge_id)
+    result = recharge_service.handle_confirm(db, user.uid, recharge_id, idempotency_key)
     if result is None:
         fail(404, "NOT_FOUND", "充值单不存在")
     return result
@@ -99,8 +99,9 @@ def withdrawal_query(
 
 @router.get("/transactions", response_model=TransactionsPage)
 def transactions(
-    page: int = 1,
-    pageSize: int = 20,
+    request: Request,
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
     type: TRANSACTION_TYPES | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -108,6 +109,9 @@ def transactions(
     user=Depends(current),
 ) -> TransactionsPage:
     """GET /api/wallet/transactions：分页（pageSize ≤100）、type/时间过滤，仅本人可见。"""
+    unknown = set(request.query_params) - {"page", "pageSize", "type", "start", "end"}
+    if unknown:
+        fail(422, "VALIDATION_ERROR", "未知查询参数", {key: "不允许的参数" for key in unknown})
     try:
         return ledger_query.query_transactions(
             db, user.uid, page, pageSize, type=type, start=start, end=end

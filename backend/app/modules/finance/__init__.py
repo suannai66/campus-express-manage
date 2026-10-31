@@ -20,4 +20,6 @@ from datetime import datetime, timezone
 
 def iso_utc(value: datetime) -> str:
     """UTC ISO 8601（带 Z）序列化（团队接口约定 v1.1：时间返回带 Z 的 UTC）。"""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")

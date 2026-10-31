@@ -94,6 +94,7 @@ async function confirmPaid() {
   try {
     await request(`/wallet/recharge/${cashierOrder.value.rechargeId}/confirm`, {
       method: "POST",
+      headers: { "Idempotency-Key": `confirm-${cashierOrder.value.rechargeId}` },
     });
     const amount = yuan(cashierOrder.value.amount);
     cashierOrder.value = null;
@@ -176,7 +177,7 @@ async function pollWithdrawal(withdrawId, cents) {
   <ul v-else-if="transactions" class="ledger-list panel">
     <li v-for="item in transactions.items" :key="item.transactionId">
       <span class="ledger-type">{{ TYPE_LABELS[item.type] || item.type }}</span>
-      <span class="ledger-time">{{ new Date(item.createdAt).toLocaleString() }}</span>
+      <span class="ledger-time">{{ new Date(item.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Singapore" }) }}</span>
       <strong :class="item.direction === 'in' ? 'ledger-in' : 'ledger-out'"
         >{{ item.direction === "in" ? "+" : "-" }}{{ yuan(item.amount) }}</strong
       ><small>余额 {{ yuan(item.balanceAfter) }}</small>
