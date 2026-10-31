@@ -15,6 +15,7 @@ from .modules.identity.config import Settings
 from .modules.identity.models import User, Challenge, LoginSession, VerificationState
 from .modules.identity.service import IdentityService
 
+from .modules.finance.services.pricing import PricingService
 from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder
 from .modules.finance.routers import wallet
 from .modules.finance.services import withdraw as withdraw_service
@@ -33,6 +34,8 @@ async def lifespan(app):
                                           RechargeOrder.__table__, WithdrawOrder.__table__])
     if not hasattr(app.state, "identity_service"):
         app.state.identity_service = IdentityService(Settings.from_environment())
+    if not hasattr(app.state, "pricing_service"):
+        app.state.pricing_service = PricingService()
     # 成员 D：提现后台演示任务（团队接口约定 v1.1：≥3 秒标记 succeeded，重启续处理）
     withdraw_service.start_withdraw_processor()
     yield

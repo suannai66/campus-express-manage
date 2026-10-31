@@ -13,9 +13,10 @@ def quote(draft: dict) -> dict:
 
     输入：stationId、deliveryAreaId、size、weight（十进制字符串 kg）、tip（整数分）；
     输出 Quote：quoteId、pricingVersion、baseFee、tip、amount、commissionRateBps、expiresAt、demo。
-    TODO(迭代·报价) 按约定第 10 节演示路线费率实现查表与报价。
+    按团队第 10 节演示路线费率计算，不产生资金写入。
     """
-    raise NotImplementedError("TODO(迭代·报价): 实现定价")
+    from .pricing import PricingService
+    return PricingService.quote(draft)
 
 
 def prepay(uid: str, request: PrepayRequest) -> PrepayResponse:
