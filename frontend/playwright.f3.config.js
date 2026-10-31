@@ -15,6 +15,7 @@ const python = path.join(
 
 export default defineConfig({
   testDir: "./tests",
+  testMatch: ["f3.spec.js", "f4.spec.js", "smoke.spec.js"],
   workers: 1,
   use: {
     baseURL: "http://127.0.0.1:18132",
