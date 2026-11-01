@@ -154,7 +154,7 @@ class EventIntegrationTests(unittest.TestCase):
         self.assertEqual(self.order(body["orderId"]).payment_status, "paid")
         self.assertEqual(self.helper.balances(), (465, 535))
 
-    def test_completion_settles_once_while_missing_fulfillment_subscription_remains_pending(self):
+    def test_completion_settles_once_and_opens_reviews(self):
         body, _ = self.paid_order()
         event = self.action(body["orderId"], False)
         self.dispatcher.dispatch_once()
@@ -163,7 +163,9 @@ class EventIntegrationTests(unittest.TestCase):
             self.assertEqual(db.get(Account, "bob").available_cent, 505)
             self.assertEqual(db.scalar(select(Settlement.commission)), 30)
             self.assertEqual(db.get(Delivery, (event["eventId"], "finance")).status, "succeeded")
-            self.assertEqual(db.get(Delivery, (event["eventId"], "fulfillment")).status, "pending")
+            self.assertEqual(db.get(Delivery, (event["eventId"], "fulfillment")).status, "succeeded")
+            from app.modules.fulfillment.models import ReviewOpening
+            self.assertIsNotNone(db.get(ReviewOpening, body["orderId"]))
         self.retry_now(event["eventId"], "fulfillment")
         self.dispatcher.dispatch_once()
         with self.fixture.sessions() as db:

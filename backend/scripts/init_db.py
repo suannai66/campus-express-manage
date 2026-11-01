@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.database import Base, engine  # noqa: E402
 from app.modules.finance import models  # noqa: E402,F401 导入即注册模型到 Base.metadata
 from app.events import models as event_models  # noqa: E402,F401
+from app.modules.fulfillment import models as fulfillment_models  # noqa: E402,F401
 
 
 def main() -> None:
