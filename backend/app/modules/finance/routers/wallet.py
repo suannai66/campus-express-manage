@@ -57,13 +57,16 @@ def recharge_create(
 
 @router.post("/recharge/{recharge_id}/confirm", response_model=RechargeConfirmResponse)
 def recharge_confirm(
-    recharge_id: str, idempotency_key: Key, db: Session = Depends(get_db), user=Depends(current)
+    request: Request, recharge_id: str, idempotency_key: Key, db: Session = Depends(get_db), user=Depends(current)
 ) -> RechargeConfirmResponse:
     """POST /api/wallet/recharge/{rechargeId}/confirm：演示专用确认入账（幂等）。
 
-    真实渠道回调本期不实现（约定 v1.1）；关闭演示模式时本接口应返回 404（后续迭代）。
+    真实渠道回调本期不实现（约定 v1.1）；关闭演示模式时本接口返回 404。
     """
-    result = recharge_service.handle_confirm(db, user.uid, recharge_id, idempotency_key)
+    result = recharge_service.handle_confirm(
+        db, user.uid, recharge_id, idempotency_key,
+        demo_enabled=getattr(request.app.state, "finance_mode", None) == "demo",
+    )
     if result is None:
         fail(404, "NOT_FOUND", "充值单不存在")
     return result

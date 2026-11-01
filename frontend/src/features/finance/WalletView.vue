@@ -18,10 +18,13 @@ const cashierOrder = ref(null); // 待确认充值单（模拟收银台）
 const withdrawOpen = ref(false);
 const withdrawAmount = ref("");
 const withdrawKey = ref("");
+const rechargePending = ref(false);
+const confirmPending = ref(false);
+const withdrawPending = ref(false);
 
 const TYPE_LABELS = {
   recharge: "充值入账",
-  withdrawal: "提现扣款",
+  withdrawal: "提现/回补",
   payment: "订单支付",
   refund: "订单退款",
   settlement: "履约结算",
@@ -56,7 +59,9 @@ async function loadBalance() {
 
 async function loadTransactions() {
   try {
-    transactions.value = await request("/wallet/transactions?page=1&pageSize=20");
+    transactions.value = await request(
+      "/wallet/transactions?page=1&pageSize=20",
+    );
   } catch (err) {
     error.value = err.message;
   }
@@ -70,12 +75,14 @@ function refreshAll() {
 onMounted(refreshAll);
 
 async function submitRecharge() {
+  if (rechargePending.value) return;
   const cents = Math.round(Number(rechargeAmount.value) * 100);
   if (!cents || cents <= 0) {
     message.value = "请输入大于 0 的金额";
     return;
   }
   error.value = "";
+  rechargePending.value = true;
   try {
     const order = await request("/wallet/recharge", {
       method: "POST",
@@ -85,16 +92,22 @@ async function submitRecharge() {
     cashierOrder.value = order;
   } catch (err) {
     error.value = err.message;
+  } finally {
+    rechargePending.value = false;
   }
 }
 
 async function confirmPaid() {
+  if (confirmPending.value || !cashierOrder.value) return;
   // 模拟收银台"我已支付"：调用演示确认接口（真实渠道回调本期不实现，约定 v1.1）
   error.value = "";
+  confirmPending.value = true;
   try {
     await request(`/wallet/recharge/${cashierOrder.value.rechargeId}/confirm`, {
       method: "POST",
-      headers: { "Idempotency-Key": `confirm-${cashierOrder.value.rechargeId}` },
+      headers: {
+        "Idempotency-Key": `confirm-${cashierOrder.value.rechargeId}`,
+      },
     });
     const amount = yuan(cashierOrder.value.amount);
     cashierOrder.value = null;
@@ -103,16 +116,20 @@ async function confirmPaid() {
     refreshAll();
   } catch (err) {
     error.value = err.message;
+  } finally {
+    confirmPending.value = false;
   }
 }
 
 async function submitWithdraw() {
+  if (withdrawPending.value) return;
   const cents = Math.round(Number(withdrawAmount.value) * 100);
   if (!cents || cents <= 0) {
     message.value = "请输入大于 0 的金额";
     return;
   }
   error.value = "";
+  withdrawPending.value = true;
   try {
     const order = await request("/wallet/withdraw", {
       method: "POST",
@@ -121,9 +138,12 @@ async function submitWithdraw() {
     });
     withdrawOpen.value = false;
     message.value = "提现申请已提交，模拟银行处理中…";
+    refreshAll();
     pollWithdrawal(order.withdrawId, cents);
   } catch (err) {
     error.value = err.message;
+  } finally {
+    withdrawPending.value = false;
   }
 }
 
@@ -133,6 +153,11 @@ async function pollWithdrawal(withdrawId, cents) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     try {
       const order = await request(`/wallet/withdrawals/${withdrawId}`);
+      if (order.status === "failed") {
+        message.value = "提现失败，金额已退回可用余额。";
+        refreshAll();
+        return;
+      }
       if (order.status === "succeeded") {
         message.value = `提现成功 ¥${yuan(cents)}（模拟渠道已到账）`;
         refreshAll();
@@ -177,17 +202,35 @@ async function pollWithdrawal(withdrawId, cents) {
   <ul v-else-if="transactions" class="ledger-list panel">
     <li v-for="item in transactions.items" :key="item.transactionId">
       <span class="ledger-type">{{ TYPE_LABELS[item.type] || item.type }}</span>
-      <span class="ledger-time">{{ new Date(item.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Singapore" }) }}</span>
+      <span class="ledger-time">{{
+        new Date(item.createdAt).toLocaleString("zh-CN", {
+          timeZone: "Asia/Singapore",
+        })
+      }}</span>
       <strong :class="item.direction === 'in' ? 'ledger-in' : 'ledger-out'"
-        >{{ item.direction === "in" ? "+" : "-" }}{{ yuan(item.amount) }}</strong
+        >{{ item.direction === "in" ? "+" : "-"
+        }}{{ yuan(item.amount) }}</strong
       ><small>余额 {{ yuan(item.balanceAfter) }}</small>
     </li>
   </ul>
 
   <!-- 充值弹窗 -->
-  <div v-if="rechargeOpen" class="dialog-backdrop" @click.self="rechargeOpen = false">
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="recharge-title">
-      <button class="dialog-close icon-button" aria-label="关闭" @click="rechargeOpen = false">
+  <div
+    v-if="rechargeOpen"
+    class="dialog-backdrop"
+    @click.self="rechargeOpen = false"
+  >
+    <section
+      class="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="recharge-title"
+    >
+      <button
+        class="dialog-close icon-button"
+        aria-label="关闭"
+        @click="rechargeOpen = false"
+      >
         <X :size="20" />
       </button>
       <p class="eyebrow">MOCK RECHARGE</p>
@@ -200,27 +243,57 @@ async function pollWithdrawal(withdrawId, cents) {
           min="0.01"
           step="0.01"
           placeholder="0.00" /></label
-      ><button class="primary-button full-width" @click="submitRecharge">去支付</button>
+      ><button
+        class="primary-button full-width"
+        :disabled="rechargePending"
+        @click="submitRecharge"
+      >
+        去支付
+      </button>
     </section>
   </div>
 
   <!-- 模拟收银台（演示确认页：触发 confirm 即完成入账） -->
   <div v-if="cashierOrder" class="dialog-backdrop">
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="cashier-title">
+    <section
+      class="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cashier-title"
+    >
       <p class="eyebrow">MOCK CASHIER</p>
       <h2 id="cashier-title">模拟收银台</h2>
       <p>充值单 {{ cashierOrder.rechargeId }}</p>
-      <p>应付金额：¥{{ yuan(cashierOrder.amount) }}（模拟支付，不会真实扣款）</p>
-      <button class="primary-button full-width" @click="confirmPaid">
+      <p>
+        应付金额：¥{{ yuan(cashierOrder.amount) }}（模拟支付，不会真实扣款）
+      </p>
+      <button
+        class="primary-button full-width"
+        :disabled="confirmPending"
+        @click="confirmPaid"
+      >
         我已支付（触发演示确认）
       </button>
     </section>
   </div>
 
   <!-- 提现弹窗 -->
-  <div v-if="withdrawOpen" class="dialog-backdrop" @click.self="withdrawOpen = false">
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="withdraw-title">
-      <button class="dialog-close icon-button" aria-label="关闭" @click="withdrawOpen = false">
+  <div
+    v-if="withdrawOpen"
+    class="dialog-backdrop"
+    @click.self="withdrawOpen = false"
+  >
+    <section
+      class="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="withdraw-title"
+    >
+      <button
+        class="dialog-close icon-button"
+        aria-label="关闭"
+        @click="withdrawOpen = false"
+      >
         <X :size="20" />
       </button>
       <p class="eyebrow">MOCK WITHDRAW</p>
@@ -233,7 +306,13 @@ async function pollWithdrawal(withdrawId, cents) {
           min="0.01"
           step="0.01"
           placeholder="0.00" /></label
-      ><button class="primary-button full-width" @click="submitWithdraw">确认提现</button>
+      ><button
+        class="primary-button full-width"
+        :disabled="withdrawPending"
+        @click="submitWithdraw"
+      >
+        确认提现
+      </button>
     </section>
   </div>
 </template>

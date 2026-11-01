@@ -44,3 +44,16 @@ ROUTE_FEES = {
 SIZE_FEES = {"small": 0, "medium": 100, "large": 300}
 EXTRA_KG_FEE = 100
 QUOTE_VALID_SECONDS = 300
+
+
+def application_mode() -> str:
+    """复用公共 CAMPUS_MODE；由应用启动时读取并固定。"""
+    mode = os.getenv("CAMPUS_MODE", "demo")
+    if mode not in {"demo", "production"}:
+        raise ValueError("CAMPUS_MODE 必须为 demo 或 production")
+    return mode
+
+
+WITHDRAW_DEMO_OUTCOME = _env_str("FIN_WITHDRAW_DEMO_OUTCOME", "succeeded")
+if WITHDRAW_DEMO_OUTCOME not in {"succeeded", "failed"}:
+    raise ValueError("FIN_WITHDRAW_DEMO_OUTCOME 必须为 succeeded 或 failed")

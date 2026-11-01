@@ -13,7 +13,7 @@ import hashlib
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ....common import remember, replay
+from ....common import fail, remember, replay
 from .transaction import wallet_transaction
 from .. import config
 from ..core import wallet_core
@@ -67,11 +67,13 @@ def create_recharge(
         return result
 
 
-def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str) -> dict | None:
+def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str, *, demo_enabled: bool = False) -> dict | None:
     """POST /api/wallet/recharge/{rechargeId}/confirm：幂等入账，与充值单状态更新同一事务。
 
     重复 confirm 返回首次结果；充值单不存在或非本人返回 None（路由转 404）。
     """
+    if demo_enabled is not True:
+        fail(404, "NOT_FOUND", "接口不存在")
     try:
         with wallet_transaction(db):
             payload = {"rechargeId": recharge_id}
