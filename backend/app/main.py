@@ -50,16 +50,27 @@ async def lifespan(app):
         app.state.identity_service = IdentityService(Settings.from_environment())
     if not hasattr(app.state, "pricing_service"):
         app.state.pricing_service = PricingService()
-    # 成员 D：提现后台演示任务（团队接口约定 v1.1：≥3 秒标记 succeeded，重启续处理）
-    withdraw_service.start_withdraw_processor()
     register_defaults()
-    processor = start_processor(sessionmaker(bind=engine, autoflush=False))
-    app.state.event_processor = processor
+    sessions = sessionmaker(bind=engine, autoflush=False)
+    withdraw_processor = withdraw_service.start_withdraw_processor(sessions)
+    app.state.withdraw_processor = withdraw_processor
+    processor = None
     try:
+        processor = start_processor(sessions)
+        app.state.event_processor = processor
         yield
     finally:
-        await asyncio.to_thread(processor.stop)
-        del app.state.event_processor
+        try:
+            if processor is not None:
+                await asyncio.to_thread(processor.stop)
+        finally:
+            try:
+                await asyncio.to_thread(withdraw_processor.stop)
+            finally:
+                if hasattr(app.state, "event_processor"):
+                    del app.state.event_processor
+                del app.state.withdraw_processor
+
 
 
 app = FastAPI(title="校园快递代取管理系统", version="1.1.0", lifespan=lifespan)

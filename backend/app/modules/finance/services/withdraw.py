@@ -112,21 +112,31 @@ def process_due_withdrawals(session_factory=None) -> int:
                    for withdraw_id in ids)
 
 
-def start_withdraw_processor() -> threading.Thread:
-    """启动后台演示任务（daemon 线程，每秒扫描）：重启后自动继续处理 processing 记录。
+class WithdrawProcessor:
+    """持有线程与停止信号；停止只阻止下一轮，不打断当前资金事务。"""
 
-    TODO(联调) A 建立统一应用启动入口后，随其迁移到该入口。
-    """
-    stop = threading.Event()
+    def __init__(self, session_factory, *, interval=None):
+        self.sessions = session_factory
+        self.interval = config.WITHDRAW_PROCESS_INTERVAL_SECONDS if interval is None else interval
+        if self.interval <= 0:
+            raise ValueError("提现扫描间隔必须大于 0")
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="finance-withdraw-processor", daemon=True)
+        self.thread.start()
 
-    def loop() -> None:
-        while not stop.is_set():
+    def _run(self):
+        while not self.stopped.is_set():
             try:
-                process_due_withdrawals()
+                process_due_withdrawals(self.sessions)
             except Exception:
                 logging.getLogger(__name__).exception("演示提现处理失败，事务回滚，下一轮重试")
-            stop.wait(config.WITHDRAW_PROCESS_INTERVAL_SECONDS)
+            self.stopped.wait(self.interval)
 
-    thread = threading.Thread(target=loop, name="finance-withdraw-processor", daemon=True)
-    thread.start()
-    return thread
+    def stop(self):
+        """可重复调用，唤醒空闲等待，等当前事务退出及会话关闭后返回。"""
+        self.stopped.set()
+        self.thread.join()
+
+
+def start_withdraw_processor(session_factory=None) -> WithdrawProcessor:
+    return WithdrawProcessor(session_factory or SessionLocal)
