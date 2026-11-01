@@ -111,7 +111,9 @@ const navigation = computed(() => [
             ? "身份认证服务"
             : ["/publish", "/tasks"].includes(route.path)
               ? `${route.meta.title} · 订单服务`
-              : "界面预览 · 示例数据"
+              : ["/orders", "/reviews"].includes(route.path)
+                ? `${route.meta.title} · 履约服务`
+                : "界面预览 · 示例数据"
         }}</span>
         <template v-if="auth.user">
           <span class="user-link"
