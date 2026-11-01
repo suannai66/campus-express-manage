@@ -87,6 +87,8 @@ def handle_confirm(
                 result = _confirm_dict(order)
                 remember(db, uid, "wallet-recharge-confirm", idempotency_key, payload, result)
                 return result
+            if order.status != "pending" or order.channel != "mock":
+                fail(409, "ORDER_CONFLICT", "充值单状态或渠道不支持模拟确认")
             # 入账（唯一索引兜底）+ 更新充值单，同一事务（约定：余额/流水/业务记录同事务）
             wallet_core.credit(
                 db, order.uid, order.amount_cent, f"{order.channel}:{recharge_id}", "recharge"

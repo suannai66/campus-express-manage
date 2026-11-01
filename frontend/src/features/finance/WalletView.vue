@@ -76,11 +76,21 @@ function refreshAll() {
 
 onMounted(refreshAll);
 
+function parseAmount(value) {
+  const text = String(value).trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
+  const [whole, decimal = ""] = text.split(".");
+  const cents = Number(whole) * 100 + Number(decimal.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) && cents >= 1 && cents <= 100000
+    ? cents
+    : null;
+}
+
 async function submitRecharge() {
   if (rechargePending.value) return;
-  const cents = Math.round(Number(rechargeAmount.value) * 100);
-  if (!cents || cents <= 0) {
-    message.value = "请输入大于 0 的金额";
+  const cents = parseAmount(rechargeAmount.value);
+  if (cents === null) {
+    error.value = "金额须为 0.01 至 1000 元，最多两位小数。";
     return;
   }
   error.value = "";
@@ -124,9 +134,9 @@ async function confirmPaid() {
 }
 
 function prepareWithdraw() {
-  const cents = Math.round(Number(withdrawAmount.value) * 100);
-  if (!Number.isSafeInteger(cents) || cents < 1 || cents > 100000) {
-    error.value = "提现金额须为 0.01 至 1000 元。";
+  const cents = parseAmount(withdrawAmount.value);
+  if (cents === null) {
+    error.value = "金额须为 0.01 至 1000 元，最多两位小数。";
     return;
   }
   error.value = "";
@@ -202,7 +212,13 @@ async function pollWithdrawal(withdrawId, cents) {
   </section>
   <p v-if="message" role="status" class="notice">{{ message }}</p>
   <p
-    v-if="error && !cashierOrder && !withdrawCashier"
+    v-if="
+      error &&
+      !rechargeOpen &&
+      !withdrawOpen &&
+      !cashierOrder &&
+      !withdrawCashier
+    "
     role="alert"
     class="notice"
   >
@@ -255,6 +271,7 @@ async function pollWithdrawal(withdrawId, cents) {
       <p class="eyebrow">MOCK RECHARGE</p>
       <h2 id="recharge-title">模拟充值</h2>
       <p>演示环境使用模拟资金，不产生真实交易。</p>
+      <p v-if="error" role="alert">{{ error }}</p>
       <label
         >充值金额（元）<input
           v-model="rechargeAmount"
@@ -321,6 +338,7 @@ async function pollWithdrawal(withdrawId, cents) {
       <p class="eyebrow">MOCK WITHDRAW</p>
       <h2 id="withdraw-title">模拟提现</h2>
       <p>金额不能超过可用余额；模拟渠道将在数秒内到账。</p>
+      <p v-if="error" role="alert">{{ error }}</p>
       <label
         >提现金额（元）<input
           v-model="withdrawAmount"

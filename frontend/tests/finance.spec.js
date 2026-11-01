@@ -377,3 +377,31 @@ test("统一模拟收银台：双渠道二维码、取消无入账、原接口�
     requests.filter((req) => req.url().endsWith("/withdraw")),
   ).toHaveLength(0);
 });
+
+test("钱包金额拒绝超精度和越界输入，不静默改额", async ({ page, request }) => {
+  const publisher = await student(request);
+  await visit(page, publisher, "/wallet");
+  const writes = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && req.url().includes("/api/wallet/"))
+      writes.push(req);
+  });
+  for (const operation of ["充值", "提现"]) {
+    await page
+      .getByRole("button", { name: new RegExp("模拟" + operation) })
+      .click();
+    const dialog = page.getByRole("dialog");
+    for (const amount of ["1.005", "0", "1000.01"]) {
+      await dialog.getByLabel(operation + "金额（元）").fill(amount);
+      await dialog
+        .getByRole("button", {
+          name: operation === "充值" ? "去支付" : "确认提现",
+          exact: true,
+        })
+        .click();
+      await expect(dialog.getByRole("alert")).toContainText("最多两位小数");
+    }
+    await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  }
+  expect(writes).toHaveLength(0);
+});
