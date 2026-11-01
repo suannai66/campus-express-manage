@@ -127,3 +127,16 @@ tests/test_events_integration.py。C 的生产业务入口仍待其交付，不�
 确认最终全部投递 succeeded、资金与流水一致。
 仅短信使用受控演示码，初始管理员角色在测试装配中设置；不访问共享开发库。
 该验证属于 API/服务集成测试，不代表浏览器交互已验收。
+
+## 浏览器交易验收
+
+从 frontend 运行 `npm run test:finance`，使用独立端口和临时数据库，
+后端为真实 A/B/C/D 与后台投递器，虚构账号经注册登录和认证审核准备。
+浏览器通过 sessionStorage 恢复真实登录凭证；页面执行充值、报价发单、支付、
+接单配送、余额和流水查询、取消退款。另验证充值确认响应丢失后同键重试，
+以及 390px 钱包布局、确认防连点与刷新恢复。
+
+本机使用系统 Edge 验证（PowerShell：`$env:PW_BROWSER_CHANNEL='msedge'`），
+未安装 Playwright 内置 Chromium 时可使用该配置。截图和失败 trace 保存到
+frontend/test-results（已忽略，不提交）。钱包充值/确认/提现增加提交中保护，
+提现申请成功后立即刷新可用余额，无需等模拟到账后才显示扣款。
