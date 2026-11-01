@@ -59,6 +59,8 @@ def credit(
     并发多笔入账按相对值串行叠加，不会互相覆盖（Q-01）。需在事务内调用；
     幂等由唯一索引兜底，重复写抛 IntegrityError。
     """
+    if type(amount_cent) is not int or amount_cent <= 0:
+        raise ValueError("资金变动金额必须为正整数分")
     _ensure_account(session, uid)
     new_balance = session.execute(
         update(Account)
@@ -85,6 +87,8 @@ def debit(
 
     不足抛 InsufficientBalanceError。需在事务内调用。
     """
+    if type(amount_cent) is not int or amount_cent <= 0:
+        raise ValueError("资金变动金额必须为正整数分")
     _ensure_account(session, uid)
     new_balance = session.execute(
         update(Account)

@@ -10,6 +10,7 @@
 """
 
 import hashlib
+import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -17,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from ....common import remember, replay
+from ....common import fail, remember, replay
 from .transaction import wallet_transaction
 from ....database import SessionLocal
 from .. import config
@@ -30,7 +31,9 @@ OPERATION = "wallet-withdraw"
 
 def _new_id(uid: str, idempotency_key: str) -> str:
     """提现单号：由 (uid, 幂等键) 派生固定单号（重复请求返回同一单，并发同键主键冲突兜底）。"""
-    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(
+        json.dumps([uid, idempotency_key], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
     return f"WD{digest}"
 
 
@@ -55,6 +58,8 @@ def apply_withdraw(db: Session, uid: str, request: WithdrawRequest, idempotency_
         withdraw_id = _new_id(uid, idempotency_key)
         existing = db.get(WithdrawOrder, withdraw_id)
         if existing is not None:
+            if existing.uid != uid or existing.amount_cent != request.amount:
+                fail(409, "IDEMPOTENCY_CONFLICT", "业务标识与原请求不一致")
             return _apply_dict(existing)
         wallet_core.debit(db, uid, request.amount, f"{uid}:{withdraw_id}", "withdrawal")
         order = WithdrawOrder(withdraw_no=withdraw_id, uid=uid, amount_cent=request.amount)

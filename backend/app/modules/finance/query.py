@@ -28,6 +28,8 @@ def query_transactions(
     """流水分页查询：items 字段见 schemas.TransactionItem（约定第 10 节）。"""
     if page < 1 or not 1 <= page_size <= config.LEDGER_PAGE_SIZE_MAX:
         raise ValueError("分页参数超出范围")
+    if start and end and date.fromisoformat(start) > date.fromisoformat(end):
+        raise ValueError("开始日期不能晚于结束日期")
     stmt = select(Ledger).where(Ledger.uid == uid)
     if type:
         stmt = stmt.where(Ledger.biz_type == type)

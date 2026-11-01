@@ -9,6 +9,7 @@
 """
 
 import hashlib
+import json
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -25,7 +26,9 @@ OPERATION = "wallet-recharge"
 
 def _new_id(uid: str, idempotency_key: str) -> str:
     """充值单号：由 (uid, 幂等键) 派生固定单号（重复请求返回同一单，并发同键主键冲突兜底）。"""
-    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(
+        json.dumps([uid, idempotency_key], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
     return f"RC{digest}"
 
 
@@ -51,6 +54,8 @@ def create_recharge(db: Session, uid: str, request: RechargeRequest, idempotency
         recharge_id = _new_id(uid, idempotency_key)
         existing = db.get(RechargeOrder, recharge_id)
         if existing is not None:
+            if existing.uid != uid or existing.amount_cent != request.amount:
+                fail(409, "IDEMPOTENCY_CONFLICT", "业务标识与原请求不一致")
             return _create_dict(existing)
         order = RechargeOrder(
             out_trade_no=recharge_id,
