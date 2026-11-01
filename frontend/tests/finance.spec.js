@@ -278,6 +278,7 @@ test("提现失败自动回补：失败提示、余额恢复与两条流水", as
   await page.getByRole("button", { name: /模拟提现/ }).click();
   await page.getByLabel("提现金额（元）").fill("5");
   await page.getByRole("button", { name: "确认提现", exact: true }).click();
+  await page.getByRole("button", { name: "确认模拟提现", exact: true }).click();
   await expect(page.locator(".wallet-banner strong")).toHaveText("¥ 5.00");
   await expect(page.getByRole("status")).toContainText("提现失败，金额已退回", {
     timeout: 15000,
@@ -296,4 +297,83 @@ test("提现失败自动回补：失败提示、余额恢复与两条流水", as
     "in",
     "out",
   ]);
+});
+
+test("统一模拟收银台：双渠道二维码、取消无入账、原接口保持不变", async ({
+  page,
+  request,
+}) => {
+  const publisher = await student(request);
+  await visit(page, publisher, "/wallet");
+  const requests = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && req.url().includes("/api/wallet/"))
+      requests.push(req);
+  });
+  await page.getByRole("button", { name: "模拟充值", exact: true }).click();
+  await page.getByLabel("充值金额（元）").fill("10");
+  await page.getByRole("button", { name: "去支付", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "模拟充值收银台" });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("radio", { name: "微信", exact: true }),
+  ).toBeChecked();
+  const image = dialog.getByRole("img", { name: "微信模拟充值凭证二维码" });
+  await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
+  const wechat = await image.getAttribute("src");
+  await dialog.getByRole("radio", { name: "支付宝", exact: true }).check();
+  const alipay = dialog.getByRole("img", { name: "支付宝模拟充值凭证二维码" });
+  await expect(alipay).toHaveAttribute("src", /^data:image\/png;base64,/);
+  expect(await alipay.getAttribute("src")).not.toBe(wechat);
+  await expect(dialog).toContainText("扫码不会付款或入账");
+  await page.screenshot({
+    path: "test-results/finance-mock-cashier-desktop.png",
+    fullPage: true,
+  });
+  await dialog.getByRole("button", { name: "稍后处理" }).click();
+  expect(
+    (
+      await (
+        await request.get("/api/wallet", { headers: auth(publisher) })
+      ).json()
+    ).balance,
+  ).toBe(0);
+  expect(requests.filter((req) => req.url().endsWith("/confirm"))).toHaveLength(
+    0,
+  );
+  // 仍用同一个充值键找回 pending 单，不额外创建新单。
+  await page.getByRole("button", { name: "去支付", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await dialog.getByRole("radio", { name: "支付宝", exact: true }).check();
+  await expect(dialog.getByRole("img")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "test-results/finance-mock-cashier-mobile.png",
+    fullPage: true,
+  });
+  await dialog.getByRole("button", { name: /我已支付/ }).click();
+  await expect(page.locator(".wallet-banner strong")).toHaveText("¥ 10.00");
+  for (const req of requests.filter(
+    (req) => new URL(req.url()).pathname === "/api/wallet/recharge",
+  )) {
+    expect(req.postDataJSON()).toEqual({ amount: 1000 });
+    expect(req.headers()["idempotency-key"]).toBeTruthy();
+  }
+  await page.getByRole("button", { name: /模拟提现/ }).click();
+  await page.getByLabel("提现金额（元）").fill("5");
+  await page.getByRole("button", { name: "确认提现", exact: true }).click();
+  const withdrawal = page.getByRole("dialog", { name: "模拟提现确认" });
+  await withdrawal.getByRole("radio", { name: "支付宝", exact: true }).check();
+  await expect(withdrawal).toContainText("无需付款");
+  await expect(
+    withdrawal.getByRole("img", { name: "支付宝模拟提现凭证二维码" }),
+  ).toBeVisible();
+  await withdrawal.getByRole("button", { name: "稍后处理" }).click();
+  expect(
+    requests.filter((req) => req.url().endsWith("/withdraw")),
+  ).toHaveLength(0);
 });
