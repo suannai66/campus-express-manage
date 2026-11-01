@@ -18,7 +18,7 @@ from .transaction import wallet_transaction
 from .. import config
 from ..core import wallet_core
 from ..models import RechargeOrder
-from ..schemas import RechargeRequest, RechargeResponse
+from ..schemas import RechargeRequest
 
 OPERATION = "wallet-recharge"
 
@@ -38,9 +38,7 @@ def _create_dict(order: RechargeOrder) -> dict:
     }
 
 
-def create_recharge(
-    db: Session, uid: str, request: RechargeRequest, idempotency_key: str
-) -> RechargeResponse:
+def create_recharge(db: Session, uid: str, request: RechargeRequest, idempotency_key: str) -> dict:
     """POST /api/wallet/recharge：创建充值单（pending），201。
 
     同幂等键同请求返回首次结果（保留原 201）；同键不同内容由 replay 抛 409。
@@ -67,7 +65,9 @@ def create_recharge(
         return result
 
 
-def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str, *, demo_enabled: bool = False) -> dict | None:
+def handle_confirm(
+    db: Session, uid: str, recharge_id: str, idempotency_key: str, *, demo_enabled: bool = False
+) -> dict | None:
     """POST /api/wallet/recharge/{rechargeId}/confirm：幂等入账，与充值单状态更新同一事务。
 
     重复 confirm 返回首次结果；充值单不存在或非本人返回 None（路由转 404）。
@@ -100,12 +100,12 @@ def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str
         # Only replay a committed matching request. Other constraint failures must
         # remain conflicts; never turn an unrelated database error into success.
         db.rollback()
-        result = replay(db, uid, "wallet-recharge-confirm", idempotency_key,
-                        {"rechargeId": recharge_id})
+        result = replay(
+            db, uid, "wallet-recharge-confirm", idempotency_key, {"rechargeId": recharge_id}
+        )
         if result is not None:
             return result
         raise
-
 
 
 def _confirm_dict(order: RechargeOrder) -> dict:

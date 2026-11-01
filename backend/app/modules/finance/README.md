@@ -116,7 +116,7 @@ C 自己的评价订阅尚未装配时单独保留重试，不影响已成功的
   检查原有行保留，并验证升级后可正常支付和退款。
 
 资金专项测试验证本地资金及消费者事务；公共事件联调另见 tests/test_events.py、
-tests/test_events_integration.py。C 的生产业务入口仍待其交付，不能将测试内的网关动作算作已交付接口。
+tests/test_events_integration.py。C 的生产业务入口已接入，真实 HTTP 与浏览器闭环测试见下文。
 
 ## 真实身份与后台自动投递联调
 

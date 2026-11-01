@@ -1,8 +1,10 @@
 """显式升级已有 SQLite 钱包表；运行：python -m app.modules.finance.migrate_frozen。"""
+
 from sqlalchemy import inspect
+from sqlalchemy.engine import Engine
 
 
-def upgrade(engine):
+def upgrade(engine: Engine) -> bool:
     """保留余额和流水，可重复执行；空库须先使用团队初始化脚本建表。"""
     if engine.dialect.name != "sqlite":
         raise ValueError("本升级仅支持 SQLite")
@@ -28,4 +30,5 @@ def upgrade(engine):
 
 if __name__ == "__main__":
     from ...database import engine
+
     print("已添加 frozen_cent，原有数据保留" if upgrade(engine) else "frozen_cent 已存在，无需升级")

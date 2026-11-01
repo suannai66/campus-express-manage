@@ -1,4 +1,5 @@
 """整数分结算；明确传入订单费率快照，不读取当前费率计算历史订单。"""
+
 from .. import config
 
 
@@ -11,9 +12,14 @@ def calc_commission(base_fee_cent: int, commission_rate_bps: int | None = None) 
     return base_fee_cent * rate // 10000
 
 
-def split_settlement(amount_cent: int, base_fee_cent: int,
-                     commission_rate_bps: int | None = None) -> tuple[int, int]:
-    if type(amount_cent) is not int or type(base_fee_cent) is not int or not 0 <= base_fee_cent <= amount_cent:
+def split_settlement(
+    amount_cent: int, base_fee_cent: int, commission_rate_bps: int | None = None
+) -> tuple[int, int]:
+    if (
+        type(amount_cent) is not int
+        or type(base_fee_cent) is not int
+        or not 0 <= base_fee_cent <= amount_cent
+    ):
         raise ValueError("订单金额和基础费用不合法")
     commission = calc_commission(base_fee_cent, commission_rate_bps)
     return amount_cent - commission, commission

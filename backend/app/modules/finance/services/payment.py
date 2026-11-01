@@ -1,6 +1,9 @@
 """顶层支付用例：只读订单快照，持久化支付事实及待投递事件，不改订单状态。"""
+
 from uuid import uuid4
 from sqlalchemy import select
+from sqlalchemy.orm import Session
+from ..schemas import PrepayRequest
 from ....common import fail, iso, now, remember, replay
 from ....events import publish
 from ...orders.gateway import OrderGateway
@@ -9,12 +12,17 @@ from ..core import wallet_core
 from .transaction import wallet_transaction
 
 
-def result(row):
-    return {"paymentId": row.id, "orderId": row.order_id, "amount": row.amount,
-            "status": row.status, "code": row.code}
+def result(row: Payment) -> dict:
+    return {
+        "paymentId": row.id,
+        "orderId": row.order_id,
+        "amount": row.amount,
+        "status": row.status,
+        "code": row.code,
+    }
 
 
-def prepay(db, uid, request, key):
+def prepay(db: Session, uid: str, request: PrepayRequest, key: str) -> dict:
     body = request.model_dump()
     with wallet_transaction(db):
         cached = replay(db, uid, "payment-prepay", key, body)
@@ -30,10 +38,16 @@ def prepay(db, uid, request, key):
             response = result(existing)
             remember(db, uid, "payment-prepay", key, body, response)
             return response
-        if (order.status != "pending_payment" or order.payment_status != "paying"
-                or order.payment_request_id != request.paymentRequestId or order.payer_uid != uid):
+        if (
+            order.status != "pending_payment"
+            or order.payment_status != "paying"
+            or order.payment_request_id != request.paymentRequestId
+            or order.payer_uid != uid
+        ):
             fail(409, "ORDER_CONFLICT", "订单没有有效的支付预占")
-        if db.scalar(select(Payment.id).where(Payment.order_id == order.id, Payment.status == "succeeded")):
+        if db.scalar(
+            select(Payment.id).where(Payment.order_id == order.id, Payment.status == "succeeded")
+        ):
             fail(409, "ORDER_CONFLICT", "订单已支付")
         if type(order.amount) is not int or order.amount <= 0:
             fail(409, "ORDER_CONFLICT", "订单金额无效")
@@ -44,16 +58,33 @@ def prepay(db, uid, request, key):
         except wallet_core.InsufficientBalanceError:
             status, code = "failed", "INSUFFICIENT_BALANCE"
         event = {
-            "eventId": str(uuid4()), "type": "payment." + status,
-            "occurredAt": iso(now()), "orderId": order.id,
-            "aggregateType": "payment", "aggregateId": payment_id, "version": 1,
-            "payload": {"paymentId": payment_id, "paymentRequestId": request.paymentRequestId,
-                        "payerUid": uid, "amount": order.amount, "code": code},
+            "eventId": str(uuid4()),
+            "type": "payment." + status,
+            "occurredAt": iso(now()),
+            "orderId": order.id,
+            "aggregateType": "payment",
+            "aggregateId": payment_id,
+            "version": 1,
+            "payload": {
+                "paymentId": payment_id,
+                "paymentRequestId": request.paymentRequestId,
+                "payerUid": uid,
+                "amount": order.amount,
+                "code": code,
+            },
         }
-        row = Payment(id=payment_id, order_id=order.id, request_id=request.paymentRequestId,
-                      payer_uid=uid, amount=order.amount, status=status, code=code,
-                      funds_status="frozen" if status == "succeeded" else "none", event=event,
-                      event_status="outbox_saved")
+        row = Payment(
+            id=payment_id,
+            order_id=order.id,
+            request_id=request.paymentRequestId,
+            payer_uid=uid,
+            amount=order.amount,
+            status=status,
+            code=code,
+            funds_status="frozen" if status == "succeeded" else "none",
+            event=event,
+            event_status="outbox_saved",
+        )
         db.add(row)
         publish(db, event)
         response = result(row)
@@ -62,7 +93,7 @@ def prepay(db, uid, request, key):
         return response
 
 
-def query_payment(db, uid, payment_id):
+def query_payment(db: Session, uid: str, payment_id: str) -> dict:
     row = db.get(Payment, payment_id)
     if row is None or row.payer_uid != uid:
         fail(404, "NOT_FOUND", "支付记录不存在")
