@@ -6,14 +6,15 @@
   app.common.replay/remember 提供）；并发同键由提现单主键/幂等表唯一约束拦截
   → 409 REQUEST_IN_PROGRESS；
 - 到账：应用后台演示任务最早 3 秒后标记 succeeded，重启后继续处理 processing 记录；
-- 失败：记录 failed，仅一次退回扣除金额（fail_reason 预留，流程后置）。
+- 失败：记录 failed，仅一次退回扣除金额并保存失败原因与回补流水。
 """
 
 import hashlib
+import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ....common import remember, replay
@@ -78,18 +79,37 @@ def query_withdrawal(db: Session, uid: str, withdraw_id: str) -> dict | None:
     }
 
 
-def process_due_withdrawals() -> int:
-    """单轮扫描：processing 且超过模拟到账延迟的记录标记 succeeded（后台任务循环调用）。"""
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.WITHDRAW_SETTLE_SECONDS)
-    with SessionLocal() as session, session.begin():
-        due = session.scalars(
-            select(WithdrawOrder).where(
-                WithdrawOrder.status == "processing", WithdrawOrder.created_at <= cutoff
-            )
-        ).all()
-        for order in due:
-            order.status = "succeeded"
-        return len(due)
+def finish_withdrawal(db: Session, withdraw_id: str, *, outcome: str, reason: str | None = None) -> bool:
+    """内部模拟打款结果；终态与失败回补共享调用方事务，不自行提交。"""
+    if outcome not in {"succeeded", "failed"}:
+        raise ValueError("提现结果不合法")
+    if outcome == "failed" and (not isinstance(reason, str) or not reason.strip() or len(reason) > 200):
+        raise ValueError("失败原因必须为 1～200 字符")
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(3, config.WITHDRAW_SETTLE_SECONDS))
+    row = db.execute(update(WithdrawOrder).where(
+        WithdrawOrder.withdraw_no == withdraw_id, WithdrawOrder.status == "processing",
+        WithdrawOrder.created_at <= cutoff,
+    ).values(status=outcome, fail_reason=reason.strip() if outcome == "failed" else None)
+     .returning(WithdrawOrder.uid, WithdrawOrder.amount_cent)).one_or_none()
+    if row is None:
+        return False
+    if outcome == "failed":
+        # 固定业务键 + processing 条件更新双重保护，换请求键也不能重复回补。
+        wallet_core.credit(db, row.uid, row.amount_cent,
+                           f"withdraw-reversal:{withdraw_id}", "withdrawal")
+    return True
+
+
+def process_due_withdrawals(session_factory=None) -> int:
+    """处理已到期的演示提现；技术异常保持 processing，由下一轮重试。"""
+    factory = session_factory or SessionLocal
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(3, config.WITHDRAW_SETTLE_SECONDS))
+    with factory() as session, session.begin():
+        ids = list(session.scalars(select(WithdrawOrder.withdraw_no).where(
+            WithdrawOrder.status == "processing", WithdrawOrder.created_at <= cutoff)))
+        return sum(finish_withdrawal(session, withdraw_id, outcome=config.WITHDRAW_DEMO_OUTCOME,
+                   reason="模拟渠道打款失败" if config.WITHDRAW_DEMO_OUTCOME == "failed" else None)
+                   for withdraw_id in ids)
 
 
 def start_withdraw_processor() -> threading.Thread:
@@ -104,7 +124,7 @@ def start_withdraw_processor() -> threading.Thread:
             try:
                 process_due_withdrawals()
             except Exception:
-                pass  # 演示任务容错：单轮失败不影响后续轮次
+                logging.getLogger(__name__).exception("演示提现处理失败，事务回滚，下一轮重试")
             stop.wait(config.WITHDRAW_PROCESS_INTERVAL_SECONDS)
 
     thread = threading.Thread(target=loop, name="finance-withdraw-processor", daemon=True)

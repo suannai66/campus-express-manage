@@ -24,7 +24,7 @@ const withdrawPending = ref(false);
 
 const TYPE_LABELS = {
   recharge: "充值入账",
-  withdrawal: "提现扣款",
+  withdrawal: "提现/回补",
   payment: "订单支付",
   refund: "订单退款",
   settlement: "履约结算",
@@ -153,6 +153,11 @@ async function pollWithdrawal(withdrawId, cents) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     try {
       const order = await request(`/wallet/withdrawals/${withdrawId}`);
+      if (order.status === "failed") {
+        message.value = "提现失败，金额已退回可用余额。";
+        refreshAll();
+        return;
+      }
       if (order.status === "succeeded") {
         message.value = `提现成功 ¥${yuan(cents)}（模拟渠道已到账）`;
         refreshAll();

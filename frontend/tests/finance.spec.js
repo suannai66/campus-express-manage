@@ -267,3 +267,33 @@ test("390px 钱包：充值确认防连点、刷新余额与布局", async ({
     fullPage: true,
   });
 });
+
+test("提现失败自动回补：失败提示、余额恢复与两条流水", async ({
+  page,
+  request,
+}) => {
+  const publisher = await student(request);
+  await visit(page, publisher, "/wallet");
+  await recharge(page);
+  await page.getByRole("button", { name: /模拟提现/ }).click();
+  await page.getByLabel("提现金额（元）").fill("5");
+  await page.getByRole("button", { name: "确认提现", exact: true }).click();
+  await expect(page.locator(".wallet-banner strong")).toHaveText("¥ 5.00");
+  await expect(page.getByRole("status")).toContainText("提现失败，金额已退回", {
+    timeout: 15000,
+  });
+  await expect(page.locator(".wallet-banner strong")).toHaveText("¥ 10.00");
+  await page.reload();
+  await expect(page.locator(".wallet-banner strong")).toHaveText("¥ 10.00");
+  await expect(page.locator(".ledger-list li")).toHaveCount(3);
+  const ledger = await (
+    await request.get("/api/wallet/transactions?type=withdrawal", {
+      headers: auth(publisher),
+    })
+  ).json();
+  expect(ledger.total).toBe(2);
+  expect(ledger.items.map((item) => item.direction).sort()).toEqual([
+    "in",
+    "out",
+  ]);
+});

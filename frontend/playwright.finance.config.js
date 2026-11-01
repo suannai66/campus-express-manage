@@ -13,6 +13,10 @@ export default defineConfig({
   webServer: [
     {
       ...fulfillment.webServer[0],
+      env: {
+        ...fulfillment.webServer[0].env,
+        FIN_WITHDRAW_DEMO_OUTCOME: "failed",
+      },
       command: fulfillment.webServer[0].command.replace("18161", "18171"),
       url: "http://127.0.0.1:18171/api/health",
     },

@@ -140,3 +140,20 @@ tests/test_events_integration.py。C 的生产业务入口仍待其交付，不�
 未安装 Playwright 内置 Chromium 时可使用该配置。截图和失败 trace 保存到
 frontend/test-results（已忽略，不提交）。钱包充值/确认/提现增加提交中保护，
 提现申请成功后立即刷新可用余额，无需等模拟到账后才显示扣款。
+
+## 提现失败回补与正式模式充值确认
+
+- 继续使用公共 CAMPUS_MODE=demo/production，由启动入口读取并固定。
+  production 下充值 confirm 返回 404，先于幂等结果重放检查；请求头、查询参数
+  不能打开演示入口。不支持真实充值回调，不代表生产支付已实现。
+- 默认模拟提现结果为 succeeded。仅在受控演示/测试启动配置中设置
+  FIN_WITHDRAW_DEMO_OUTCOME=failed 可演示失败；不提供客户端指定结果的 HTTP 接口。
+- 提现最早 3 秒后处理。失败原因保存到已有 fail_reason，状态 processing→failed
+  条件更新、金额全额回补及唯一业务键流水同事务保存。技术异常回滚后保留 processing，
+  下一轮重试，不能把暂时数据库异常当作确定打款失败。
+- 回补流水沿用 withdrawal 类型、direction=in，原扣款为 direction=out，
+  不增加团队未批准的流水枚举或响应字段。钱包页面显示提现失败并刷新余额。
+- 成功和失败是互斥终态，重复扫描、并发失败或成功/失败竞争不会重复回补。
+  本轮没有模型字段变化，不需要数据库迁移。
+- test_finance_wallet_safety.py 覆盖模式限制、并发、回补幂等、错误回滚与恢复；
+  finance 浏览器配置启用受控失败结果，验证真实后台处理后的余额和流水。

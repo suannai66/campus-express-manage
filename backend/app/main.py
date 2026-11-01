@@ -22,6 +22,7 @@ from .modules.identity.service import IdentityService
 from .modules.identity.verification_api import router as verification_router
 from .modules.identity.models import VerificationApplication, VerificationPhoto, VerificationReview, VerificationNotification
 
+from .modules.finance import config as finance_config
 from .modules.finance.services.pricing import PricingService
 from .modules.finance.models import Account, Ledger, RechargeOrder, WithdrawOrder, Payment, Refund, FinanceReceipt, Settlement
 from .modules.finance.routers import wallet, payment
@@ -35,6 +36,7 @@ from .modules.fulfillment.models import TABLES as fulfillment_tables
 
 @asynccontextmanager
 async def lifespan(app):
+    app.state.finance_mode = finance_config.application_mode()
     Base.metadata.create_all(engine, tables=[Order.__table__, Idempotency.__table__,
                                           EventReceipt.__table__, PaymentFact.__table__,
                                           User.__table__, Challenge.__table__,
