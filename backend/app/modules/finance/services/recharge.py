@@ -9,6 +9,7 @@
 """
 
 import hashlib
+import json
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,14 +19,16 @@ from .transaction import wallet_transaction
 from .. import config
 from ..core import wallet_core
 from ..models import RechargeOrder
-from ..schemas import RechargeRequest, RechargeResponse
+from ..schemas import RechargeRequest
 
 OPERATION = "wallet-recharge"
 
 
 def _new_id(uid: str, idempotency_key: str) -> str:
     """充值单号：由 (uid, 幂等键) 派生固定单号（重复请求返回同一单，并发同键主键冲突兜底）。"""
-    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(
+        json.dumps([uid, idempotency_key], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
     return f"RC{digest}"
 
 
@@ -38,9 +41,7 @@ def _create_dict(order: RechargeOrder) -> dict:
     }
 
 
-def create_recharge(
-    db: Session, uid: str, request: RechargeRequest, idempotency_key: str
-) -> RechargeResponse:
+def create_recharge(db: Session, uid: str, request: RechargeRequest, idempotency_key: str) -> dict:
     """POST /api/wallet/recharge：创建充值单（pending），201。
 
     同幂等键同请求返回首次结果（保留原 201）；同键不同内容由 replay 抛 409。
@@ -53,6 +54,8 @@ def create_recharge(
         recharge_id = _new_id(uid, idempotency_key)
         existing = db.get(RechargeOrder, recharge_id)
         if existing is not None:
+            if existing.uid != uid or existing.amount_cent != request.amount:
+                fail(409, "IDEMPOTENCY_CONFLICT", "业务标识与原请求不一致")
             return _create_dict(existing)
         order = RechargeOrder(
             out_trade_no=recharge_id,
@@ -67,7 +70,9 @@ def create_recharge(
         return result
 
 
-def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str, *, demo_enabled: bool = False) -> dict | None:
+def handle_confirm(
+    db: Session, uid: str, recharge_id: str, idempotency_key: str, *, demo_enabled: bool = False
+) -> dict | None:
     """POST /api/wallet/recharge/{rechargeId}/confirm：幂等入账，与充值单状态更新同一事务。
 
     重复 confirm 返回首次结果；充值单不存在或非本人返回 None（路由转 404）。
@@ -87,6 +92,8 @@ def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str
                 result = _confirm_dict(order)
                 remember(db, uid, "wallet-recharge-confirm", idempotency_key, payload, result)
                 return result
+            if order.status != "pending" or order.channel != "mock":
+                fail(409, "ORDER_CONFLICT", "充值单状态或渠道不支持模拟确认")
             # 入账（唯一索引兜底）+ 更新充值单，同一事务（约定：余额/流水/业务记录同事务）
             wallet_core.credit(
                 db, order.uid, order.amount_cent, f"{order.channel}:{recharge_id}", "recharge"
@@ -100,12 +107,12 @@ def handle_confirm(db: Session, uid: str, recharge_id: str, idempotency_key: str
         # Only replay a committed matching request. Other constraint failures must
         # remain conflicts; never turn an unrelated database error into success.
         db.rollback()
-        result = replay(db, uid, "wallet-recharge-confirm", idempotency_key,
-                        {"rechargeId": recharge_id})
+        result = replay(
+            db, uid, "wallet-recharge-confirm", idempotency_key, {"rechargeId": recharge_id}
+        )
         if result is not None:
             return result
         raise
-
 
 
 def _confirm_dict(order: RechargeOrder) -> dict:

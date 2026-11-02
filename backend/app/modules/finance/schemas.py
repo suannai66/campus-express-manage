@@ -108,7 +108,9 @@ class PrepayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     orderId: str = Field(min_length=1, max_length=100, description="B 的订单号")
-    paymentRequestId: str = Field(min_length=1, max_length=100, description="B 支付预占生成的请求标识")
+    paymentRequestId: str = Field(
+        min_length=1, max_length=100, description="B 支付预占生成的请求标识"
+    )
 
 
 class PrepayResponse(BaseModel):

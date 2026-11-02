@@ -5,7 +5,7 @@
 无需显式行锁（C-03 修订）。
 
 冻结字段：account.frozen_cent 保存冻结金额（整数分），初始为 0，不计入可用余额。
-本次包含支付冻结及其流水，解冻和结算后续实现。
+已实现支付冻结、取消解冻、配送结算及对应流水和审计。
 已有数据库执行 python -m app.modules.finance.migrate_frozen 升级，保留原有数据。
 """
 
@@ -32,13 +32,21 @@ class Account(Base):
         BigInteger, nullable=False, default=0, comment="可用余额（分），不为负"
     )
     frozen_cent: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0, server_default="0",
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default="0",
         comment="冻结余额（分），不计入可用余额，初始为 0",
     )
     version: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, comment="版本号，审计用途（SQLite 写串行化下不承担并发控制）"
+        Integer,
+        nullable=False,
+        default=0,
+        comment="版本号，审计用途（SQLite 写串行化下不承担并发控制）",
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class Ledger(Base):
@@ -52,7 +60,9 @@ class Ledger(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="账户所有者")
     biz_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, comment="流水类型（团队接口约定 v1.1 枚举）：v1 为 recharge / withdrawal；payment/refund/settlement 后续迭代加入"
+        String(32),
+        nullable=False,
+        comment="流水类型：recharge / withdrawal / payment / refund / settlement",
     )
     delta: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="变动额（分），正入负出")
     balance_after: Mapped[int] = mapped_column(
@@ -61,7 +71,9 @@ class Ledger(Base):
     idempotency_key: Mapped[str] = mapped_column(
         String(128), nullable=False, comment="幂等键（派生规则见 core/event_acl.py）"
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
 
     __table_args__ = (
         UniqueConstraint("idempotency_key", "biz_type", name="uq_ledger_idempotency"),
@@ -76,43 +88,72 @@ class RechargeOrder(Base):
 
     __tablename__ = "recharge_order"
 
-    out_trade_no: Mapped[str] = mapped_column(String(64), primary_key=True, comment="充值单号（对外为 rechargeId）")
+    out_trade_no: Mapped[str] = mapped_column(
+        String(64), primary_key=True, comment="充值单号（对外为 rechargeId）"
+    )
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     amount_cent: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="充值金额（分）")
-    channel: Mapped[str] = mapped_column(String(32), nullable=False, comment="mock / alipay_sandbox")
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", comment="pending / succeeded / failed / closed"
+    channel: Mapped[str] = mapped_column(
+        String(32), nullable=False, comment="mock / alipay_sandbox"
     )
-    channel_txn_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="渠道流水号")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="pending",
+        comment="pending / succeeded / failed / closed",
+    )
+    channel_txn_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, comment="渠道流水号"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
 
 class WithdrawOrder(Base):
-    """提现单（FR8，团队接口约定 v1.1）：申请 → 校验并扣可用余额（同事务）→ processing → 后台任务 ≥3s 标记 succeeded；失败退回（后置）。"""
+    """提现单（FR8，团队接口约定 v1.1）：申请 → 校验并扣可用余额（同事务）→ processing → 后台任务 ≥3s 标记 succeeded；失败仅一次退回。"""
 
     __tablename__ = "withdraw_order"
 
-    withdraw_no: Mapped[str] = mapped_column(String(64), primary_key=True, comment="提现单号（对外为 withdrawId）")
+    withdraw_no: Mapped[str] = mapped_column(
+        String(64), primary_key=True, comment="提现单号（对外为 withdrawId）"
+    )
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     amount_cent: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="提现金额（分）")
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="processing", comment="processing / succeeded / failed"
     )
-    fail_reason: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="打款失败原因")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    fail_reason: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, comment="打款失败原因"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
+
 class Payment(Base):
-    """支付事实与待投递事件同事务保存，事件交由 A 的投递组件接入。"""
+    """支付事实与原始事件审计；通过公共 outbox 同事务发布。"""
+
     __tablename__ = "finance_payments"
     __table_args__ = (
-        Index("uq_finance_successful_order", "order_id", unique=True,
-              sqlite_where=text("status = 'succeeded'")),
+        Index(
+            "uq_finance_successful_order",
+            "order_id",
+            unique=True,
+            sqlite_where=text("status = 'succeeded'"),
+        ),
     )
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     order_id: Mapped[str] = mapped_column(String(100), index=True)
@@ -121,13 +162,14 @@ class Payment(Base):
     amount: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(20))
     code: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    funds_status: Mapped[str] = mapped_column(String(20))  # frozen / none；后续 settled/refunded
+    funds_status: Mapped[str] = mapped_column(String(20))  # none / frozen / settled / refunded
     event: Mapped[dict] = mapped_column(JSON)
     event_status: Mapped[str] = mapped_column(String(20), default="pending")
 
 
 class Refund(Base):
-    """每订单、每支付最多退款一次，保存原始待发布事件。"""
+    """每订单、每支付最多退款一次，保存原始事件审计并写公共 outbox。"""
+
     __tablename__ = "finance_refunds"
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     order_id: Mapped[str] = mapped_column(String(100), unique=True)
@@ -150,6 +192,7 @@ class FinanceReceipt(Base):
 
 class Settlement(Base):
     """订单资金结算及平台佣金审计；客户冻结额只消耗一次。"""
+
     __tablename__ = "finance_settlements"
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     order_id: Mapped[str] = mapped_column(String(100), unique=True)
@@ -162,4 +205,6 @@ class Settlement(Base):
     commission: Mapped[int] = mapped_column(BigInteger)
     income: Mapped[int] = mapped_column(BigInteger)
     pricing_version: Mapped[str] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )

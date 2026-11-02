@@ -57,14 +57,21 @@ def recharge_create(
 
 @router.post("/recharge/{recharge_id}/confirm", response_model=RechargeConfirmResponse)
 def recharge_confirm(
-    request: Request, recharge_id: str, idempotency_key: Key, db: Session = Depends(get_db), user=Depends(current)
+    request: Request,
+    recharge_id: str,
+    idempotency_key: Key,
+    db: Session = Depends(get_db),
+    user=Depends(current),
 ) -> RechargeConfirmResponse:
     """POST /api/wallet/recharge/{rechargeId}/confirm：演示专用确认入账（幂等）。
 
     真实渠道回调本期不实现（约定 v1.1）；关闭演示模式时本接口返回 404。
     """
     result = recharge_service.handle_confirm(
-        db, user.uid, recharge_id, idempotency_key,
+        db,
+        user.uid,
+        recharge_id,
+        idempotency_key,
         demo_enabled=getattr(request.app.state, "finance_mode", None) == "demo",
     )
     if result is None:
@@ -86,7 +93,12 @@ def withdraw_apply(
     try:
         return withdraw_service.apply_withdraw(db, user.uid, request, idempotency_key)
     except InsufficientBalanceError as exc:
-        fail(422, "VALIDATION_ERROR", "提现金额超过可用余额", {"amount": f"可用余额不足 {exc.have_cent} 分"})
+        fail(
+            422,
+            "VALIDATION_ERROR",
+            "提现金额超过可用余额",
+            {"amount": f"可用余额不足 {exc.have_cent} 分"},
+        )
 
 
 @router.get("/withdrawals/{withdraw_id}", response_model=WithdrawalQueryResponse)

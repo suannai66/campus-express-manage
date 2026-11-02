@@ -28,6 +28,8 @@ def query_transactions(
     """流水分页查询：items 字段见 schemas.TransactionItem（约定第 10 节）。"""
     if page < 1 or not 1 <= page_size <= config.LEDGER_PAGE_SIZE_MAX:
         raise ValueError("分页参数超出范围")
+    if start and end and date.fromisoformat(start) > date.fromisoformat(end):
+        raise ValueError("开始日期不能晚于结束日期")
     stmt = select(Ledger).where(Ledger.uid == uid)
     if type:
         stmt = stmt.where(Ledger.biz_type == type)
@@ -46,16 +48,34 @@ def query_transactions(
     rows = db.scalars(
         stmt.order_by(Ledger.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).all()
-    payment_orders = dict(db.execute(select(Payment.id, Payment.order_id).where(
-        Payment.id.in_([row.idempotency_key for row in rows if row.biz_type == "payment"])
-    )).all())
-    refund_orders = dict(db.execute(select(Refund.id, Refund.order_id).where(
-        Refund.id.in_([row.idempotency_key for row in rows if row.biz_type == "refund"])
-    )).all())
-    settlement_orders = dict(db.execute(select(Settlement.id, Settlement.order_id).where(
-        Settlement.id.in_([row.idempotency_key for row in rows if row.biz_type == "settlement"])
-    )).all())
-    order_maps = {"payment": payment_orders, "refund": refund_orders, "settlement": settlement_orders}
+    payment_orders = dict(
+        db.execute(
+            select(Payment.id, Payment.order_id).where(
+                Payment.id.in_([row.idempotency_key for row in rows if row.biz_type == "payment"])
+            )
+        ).all()
+    )
+    refund_orders = dict(
+        db.execute(
+            select(Refund.id, Refund.order_id).where(
+                Refund.id.in_([row.idempotency_key for row in rows if row.biz_type == "refund"])
+            )
+        ).all()
+    )
+    settlement_orders = dict(
+        db.execute(
+            select(Settlement.id, Settlement.order_id).where(
+                Settlement.id.in_(
+                    [row.idempotency_key for row in rows if row.biz_type == "settlement"]
+                )
+            )
+        ).all()
+    )
+    order_maps = {
+        "payment": payment_orders,
+        "refund": refund_orders,
+        "settlement": settlement_orders,
+    }
     return {
         "items": [
             {

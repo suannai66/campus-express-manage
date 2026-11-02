@@ -59,6 +59,8 @@ def credit(
     并发多笔入账按相对值串行叠加，不会互相覆盖（Q-01）。需在事务内调用；
     幂等由唯一索引兜底，重复写抛 IntegrityError。
     """
+    if type(amount_cent) is not int or amount_cent <= 0:
+        raise ValueError("资金变动金额必须为正整数分")
     _ensure_account(session, uid)
     new_balance = session.execute(
         update(Account)
@@ -85,6 +87,8 @@ def debit(
 
     不足抛 InsufficientBalanceError。需在事务内调用。
     """
+    if type(amount_cent) is not int or amount_cent <= 0:
+        raise ValueError("资金变动金额必须为正整数分")
     _ensure_account(session, uid)
     new_balance = session.execute(
         update(Account)
@@ -93,9 +97,7 @@ def debit(
         .returning(Account.available_cent)
     ).scalar_one_or_none()
     if new_balance is None:
-        have_cent = session.scalar(
-            select(Account.available_cent).where(Account.uid == uid)
-        )
+        have_cent = session.scalar(select(Account.available_cent).where(Account.uid == uid))
         raise InsufficientBalanceError(uid, amount_cent, have_cent or 0)
     ledger = Ledger(
         uid=uid,
@@ -121,16 +123,24 @@ def freeze(session: Session, uid: str, amount_cent: int, payment_id: str) -> Led
         raise ValueError("冻结金额必须为正整数分")
     _ensure_account(session, uid)
     balance = session.execute(
-        update(Account).where(Account.uid == uid, Account.available_cent >= amount_cent)
-        .values(available_cent=Account.available_cent - amount_cent,
-                frozen_cent=Account.frozen_cent + amount_cent,
-                version=Account.version + 1)
+        update(Account)
+        .where(Account.uid == uid, Account.available_cent >= amount_cent)
+        .values(
+            available_cent=Account.available_cent - amount_cent,
+            frozen_cent=Account.frozen_cent + amount_cent,
+            version=Account.version + 1,
+        )
         .returning(Account.available_cent)
     ).scalar_one_or_none()
     if balance is None:
         raise InsufficientBalanceError(uid, amount_cent, get_balance(session, uid))
-    ledger = Ledger(uid=uid, biz_type="payment", delta=-amount_cent,
-                    balance_after=balance, idempotency_key=payment_id)
+    ledger = Ledger(
+        uid=uid,
+        biz_type="payment",
+        delta=-amount_cent,
+        balance_after=balance,
+        idempotency_key=payment_id,
+    )
     session.add(ledger)
     session.flush()
     return ledger
@@ -139,40 +149,71 @@ def freeze(session: Session, uid: str, amount_cent: int, payment_id: str) -> Led
 def release_payment(session: Session, payment: Payment, refund_id: str) -> Ledger:
     """只释放指定支付的冻结额，状态条件更新与资金、流水处于调用方事务。"""
     from ....common import fail
-    changed = session.execute(update(Payment).where(
-        Payment.id == payment.id, Payment.status == "succeeded", Payment.funds_status == "frozen"
-    ).values(funds_status="refunded"))
+
+    changed = session.execute(
+        update(Payment)
+        .where(
+            Payment.id == payment.id,
+            Payment.status == "succeeded",
+            Payment.funds_status == "frozen",
+        )
+        .values(funds_status="refunded")
+    )
     if changed.rowcount != 1:
         fail(409, "ORDER_CONFLICT", "支付资金已退款、已结算或未冻结")
-    balance = session.execute(update(Account).where(
-        Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount
-    ).values(available_cent=Account.available_cent + payment.amount,
-             frozen_cent=Account.frozen_cent - payment.amount,
-             version=Account.version + 1).returning(Account.available_cent)).scalar_one_or_none()
+    balance = session.execute(
+        update(Account)
+        .where(Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount)
+        .values(
+            available_cent=Account.available_cent + payment.amount,
+            frozen_cent=Account.frozen_cent - payment.amount,
+            version=Account.version + 1,
+        )
+        .returning(Account.available_cent)
+    ).scalar_one_or_none()
     if balance is None:
         fail(409, "ORDER_CONFLICT", "冻结资金不足，无法解冻")
-    ledger = Ledger(uid=payment.payer_uid, biz_type="refund", delta=payment.amount,
-                    balance_after=balance, idempotency_key=refund_id)
+    ledger = Ledger(
+        uid=payment.payer_uid,
+        biz_type="refund",
+        delta=payment.amount,
+        balance_after=balance,
+        idempotency_key=refund_id,
+    )
     session.add(ledger)
     session.flush()
     return ledger
 
 
-def settle_payment(session: Session, payment: Payment, courier_uid: str,
-                   income_cent: int, settlement_id: str):
+def settle_payment(
+    session: Session, payment: Payment, courier_uid: str, income_cent: int, settlement_id: str
+) -> None:
     """原子消耗指定支付冻结资金，并给取件员入账；平台份额由结算审计留账。"""
     from ....common import fail
-    if (type(income_cent) is not int or not 0 <= income_cent <= payment.amount
-            or not courier_uid or courier_uid == payment.payer_uid):
+
+    if (
+        type(income_cent) is not int
+        or not 0 <= income_cent <= payment.amount
+        or not courier_uid
+        or courier_uid == payment.payer_uid
+    ):
         fail(409, "ORDER_CONFLICT", "结算收款人或金额无效")
-    changed = session.execute(update(Payment).where(
-        Payment.id == payment.id, Payment.status == "succeeded", Payment.funds_status == "frozen"
-    ).values(funds_status="settled"))
+    changed = session.execute(
+        update(Payment)
+        .where(
+            Payment.id == payment.id,
+            Payment.status == "succeeded",
+            Payment.funds_status == "frozen",
+        )
+        .values(funds_status="settled")
+    )
     if changed.rowcount != 1:
         fail(409, "ORDER_CONFLICT", "支付资金已结算、已退款或未冻结")
-    changed = session.execute(update(Account).where(
-        Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount
-    ).values(frozen_cent=Account.frozen_cent - payment.amount, version=Account.version + 1))
+    changed = session.execute(
+        update(Account)
+        .where(Account.uid == payment.payer_uid, Account.frozen_cent >= payment.amount)
+        .values(frozen_cent=Account.frozen_cent - payment.amount, version=Account.version + 1)
+    )
     if changed.rowcount != 1:
         fail(409, "ORDER_CONFLICT", "冻结资金不足，无法结算")
     # 0 收益允许存在（100% 佣金且无小费），仍在 Settlement 中完整留账。

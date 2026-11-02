@@ -134,6 +134,24 @@ class RechargeModeTests(unittest.TestCase):
         finally:
             f.tearDown()
 
+    def test_closed_failed_or_non_mock_recharge_cannot_credit(self):
+        f = test_wallet.WalletTests()
+        f.setUp()
+        try:
+            for status, channel in [("closed", "mock"), ("failed", "mock"), ("pending", "alipay_sandbox")]:
+                order = f.recharge(100).json()
+                with f.sessions.begin() as db:
+                    row = db.get(RechargeOrder, order["rechargeId"])
+                    row.status, row.channel = status, channel
+                response = f.confirm(order["rechargeId"])
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(f.balance(), 0)
+                with f.sessions() as db:
+                    self.assertEqual(db.get(RechargeOrder, order["rechargeId"]).status, status)
+                    self.assertEqual(db.scalar(select(func.count()).select_from(Ledger)), 0)
+        finally:
+            f.tearDown()
+
     def test_demo_remains_available_and_service_default_denies(self):
         f = test_wallet.WalletTests()
         with patch.dict("os.environ", {"CAMPUS_MODE": "demo"}):

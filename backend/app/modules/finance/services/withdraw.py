@@ -10,27 +10,30 @@
 """
 
 import hashlib
+import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from ....common import remember, replay
+from ....common import fail, remember, replay
 from .transaction import wallet_transaction
 from ....database import SessionLocal
 from .. import config
 from ..core import wallet_core
 from ..models import WithdrawOrder
-from ..schemas import WithdrawRequest, WithdrawResponse
+from ..schemas import WithdrawRequest
 
 OPERATION = "wallet-withdraw"
 
 
 def _new_id(uid: str, idempotency_key: str) -> str:
     """提现单号：由 (uid, 幂等键) 派生固定单号（重复请求返回同一单，并发同键主键冲突兜底）。"""
-    digest = hashlib.sha256(f"{uid}:{idempotency_key}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(
+        json.dumps([uid, idempotency_key], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
     return f"WD{digest}"
 
 
@@ -42,9 +45,7 @@ def _apply_dict(order: WithdrawOrder) -> dict:
     }
 
 
-def apply_withdraw(
-    db: Session, uid: str, request: WithdrawRequest, idempotency_key: str
-) -> WithdrawResponse:
+def apply_withdraw(db: Session, uid: str, request: WithdrawRequest, idempotency_key: str) -> dict:
     """POST /api/wallet/withdraw：扣款 + 建单同一事务，201；余额不足抛 InsufficientBalanceError。
 
     同幂等键同请求返回首次结果（只扣一次）；同键不同内容由 replay 抛 409。
@@ -57,6 +58,8 @@ def apply_withdraw(
         withdraw_id = _new_id(uid, idempotency_key)
         existing = db.get(WithdrawOrder, withdraw_id)
         if existing is not None:
+            if existing.uid != uid or existing.amount_cent != request.amount:
+                fail(409, "IDEMPOTENCY_CONFLICT", "业务标识与原请求不一致")
             return _apply_dict(existing)
         wallet_core.debit(db, uid, request.amount, f"{uid}:{withdraw_id}", "withdrawal")
         order = WithdrawOrder(withdraw_no=withdraw_id, uid=uid, amount_cent=request.amount)
@@ -79,52 +82,77 @@ def query_withdrawal(db: Session, uid: str, withdraw_id: str) -> dict | None:
     }
 
 
-def finish_withdrawal(db: Session, withdraw_id: str, *, outcome: str, reason: str | None = None) -> bool:
+def finish_withdrawal(
+    db: Session, withdraw_id: str, *, outcome: str, reason: str | None = None
+) -> bool:
     """内部模拟打款结果；终态与失败回补共享调用方事务，不自行提交。"""
     if outcome not in {"succeeded", "failed"}:
         raise ValueError("提现结果不合法")
-    if outcome == "failed" and (not isinstance(reason, str) or not reason.strip() or len(reason) > 200):
+    if outcome == "failed" and (
+        not isinstance(reason, str) or not reason.strip() or len(reason) > 200
+    ):
         raise ValueError("失败原因必须为 1～200 字符")
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(3, config.WITHDRAW_SETTLE_SECONDS))
-    row = db.execute(update(WithdrawOrder).where(
-        WithdrawOrder.withdraw_no == withdraw_id, WithdrawOrder.status == "processing",
-        WithdrawOrder.created_at <= cutoff,
-    ).values(status=outcome, fail_reason=reason.strip() if outcome == "failed" else None)
-     .returning(WithdrawOrder.uid, WithdrawOrder.amount_cent)).one_or_none()
+    row = db.execute(
+        update(WithdrawOrder)
+        .where(
+            WithdrawOrder.withdraw_no == withdraw_id,
+            WithdrawOrder.status == "processing",
+            WithdrawOrder.created_at <= cutoff,
+        )
+        .values(status=outcome, fail_reason=reason.strip() if outcome == "failed" else None)
+        .returning(WithdrawOrder.uid, WithdrawOrder.amount_cent)
+    ).one_or_none()
     if row is None:
         return False
     if outcome == "failed":
         # 固定业务键 + processing 条件更新双重保护，换请求键也不能重复回补。
-        wallet_core.credit(db, row.uid, row.amount_cent,
-                           f"withdraw-reversal:{withdraw_id}", "withdrawal")
+        wallet_core.credit(
+            db, row.uid, row.amount_cent, f"withdraw-reversal:{withdraw_id}", "withdrawal"
+        )
     return True
 
 
-def process_due_withdrawals(session_factory=None) -> int:
+def process_due_withdrawals(session_factory: sessionmaker[Session] | None = None) -> int:
     """处理已到期的演示提现；技术异常保持 processing，由下一轮重试。"""
     factory = session_factory or SessionLocal
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(3, config.WITHDRAW_SETTLE_SECONDS))
     with factory() as session, session.begin():
-        ids = list(session.scalars(select(WithdrawOrder.withdraw_no).where(
-            WithdrawOrder.status == "processing", WithdrawOrder.created_at <= cutoff)))
-        return sum(finish_withdrawal(session, withdraw_id, outcome=config.WITHDRAW_DEMO_OUTCOME,
-                   reason="模拟渠道打款失败" if config.WITHDRAW_DEMO_OUTCOME == "failed" else None)
-                   for withdraw_id in ids)
+        ids = list(
+            session.scalars(
+                select(WithdrawOrder.withdraw_no).where(
+                    WithdrawOrder.status == "processing", WithdrawOrder.created_at <= cutoff
+                )
+            )
+        )
+        return sum(
+            finish_withdrawal(
+                session,
+                withdraw_id,
+                outcome=config.WITHDRAW_DEMO_OUTCOME,
+                reason="模拟渠道打款失败" if config.WITHDRAW_DEMO_OUTCOME == "failed" else None,
+            )
+            for withdraw_id in ids
+        )
 
 
 class WithdrawProcessor:
     """持有线程与停止信号；停止只阻止下一轮，不打断当前资金事务。"""
 
-    def __init__(self, session_factory, *, interval=None):
+    def __init__(
+        self, session_factory: sessionmaker[Session], *, interval: float | None = None
+    ) -> None:
         self.sessions = session_factory
         self.interval = config.WITHDRAW_PROCESS_INTERVAL_SECONDS if interval is None else interval
         if self.interval <= 0:
             raise ValueError("提现扫描间隔必须大于 0")
         self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self._run, name="finance-withdraw-processor", daemon=True)
+        self.thread = threading.Thread(
+            target=self._run, name="finance-withdraw-processor", daemon=True
+        )
         self.thread.start()
 
-    def _run(self):
+    def _run(self) -> None:
         while not self.stopped.is_set():
             try:
                 process_due_withdrawals(self.sessions)
@@ -132,11 +160,13 @@ class WithdrawProcessor:
                 logging.getLogger(__name__).exception("演示提现处理失败，事务回滚，下一轮重试")
             self.stopped.wait(self.interval)
 
-    def stop(self):
+    def stop(self) -> None:
         """可重复调用，唤醒空闲等待，等当前事务退出及会话关闭后返回。"""
         self.stopped.set()
         self.thread.join()
 
 
-def start_withdraw_processor(session_factory=None) -> WithdrawProcessor:
+def start_withdraw_processor(
+    session_factory: sessionmaker[Session] | None = None,
+) -> WithdrawProcessor:
     return WithdrawProcessor(session_factory or SessionLocal)

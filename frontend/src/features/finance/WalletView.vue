@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 import { X } from "@lucide/vue";
 import PageHeading from "../../components/PageHeading.vue";
+import MockCashier from "./MockCashier.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import { request } from "../../services/http";
 
@@ -21,6 +22,7 @@ const withdrawKey = ref("");
 const rechargePending = ref(false);
 const confirmPending = ref(false);
 const withdrawPending = ref(false);
+const withdrawCashier = ref(null);
 
 const TYPE_LABELS = {
   recharge: "充值入账",
@@ -74,11 +76,21 @@ function refreshAll() {
 
 onMounted(refreshAll);
 
+function parseAmount(value) {
+  const text = String(value).trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
+  const [whole, decimal = ""] = text.split(".");
+  const cents = Number(whole) * 100 + Number(decimal.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) && cents >= 1 && cents <= 100000
+    ? cents
+    : null;
+}
+
 async function submitRecharge() {
   if (rechargePending.value) return;
-  const cents = Math.round(Number(rechargeAmount.value) * 100);
-  if (!cents || cents <= 0) {
-    message.value = "请输入大于 0 的金额";
+  const cents = parseAmount(rechargeAmount.value);
+  if (cents === null) {
+    error.value = "金额须为 0.01 至 1000 元，最多两位小数。";
     return;
   }
   error.value = "";
@@ -121,9 +133,19 @@ async function confirmPaid() {
   }
 }
 
+function prepareWithdraw() {
+  const cents = parseAmount(withdrawAmount.value);
+  if (cents === null) {
+    error.value = "金额须为 0.01 至 1000 元，最多两位小数。";
+    return;
+  }
+  error.value = "";
+  withdrawCashier.value = { amount: cents, reference: withdrawKey.value };
+}
+
 async function submitWithdraw() {
-  if (withdrawPending.value) return;
-  const cents = Math.round(Number(withdrawAmount.value) * 100);
+  if (withdrawPending.value || !withdrawCashier.value) return;
+  const cents = withdrawCashier.value.amount;
   if (!cents || cents <= 0) {
     message.value = "请输入大于 0 的金额";
     return;
@@ -137,6 +159,7 @@ async function submitWithdraw() {
       body: JSON.stringify({ amount: cents }),
     });
     withdrawOpen.value = false;
+    withdrawCashier.value = null;
     message.value = "提现申请已提交，模拟银行处理中…";
     refreshAll();
     pollWithdrawal(order.withdrawId, cents);
@@ -188,7 +211,19 @@ async function pollWithdrawal(withdrawId, cents) {
     </div>
   </section>
   <p v-if="message" role="status" class="notice">{{ message }}</p>
-  <p v-if="error" role="alert" class="notice">{{ error }}</p>
+  <p
+    v-if="
+      error &&
+      !rechargeOpen &&
+      !withdrawOpen &&
+      !cashierOrder &&
+      !withdrawCashier
+    "
+    role="alert"
+    class="notice"
+  >
+    {{ error }}
+  </p>
   <div class="section-heading">
     <h2>收支流水</h2>
     <span class="soft-tag">模拟钱包</span>
@@ -216,7 +251,7 @@ async function pollWithdrawal(withdrawId, cents) {
 
   <!-- 充值弹窗 -->
   <div
-    v-if="rechargeOpen"
+    v-if="rechargeOpen && !cashierOrder"
     class="dialog-backdrop"
     @click.self="rechargeOpen = false"
   >
@@ -236,6 +271,7 @@ async function pollWithdrawal(withdrawId, cents) {
       <p class="eyebrow">MOCK RECHARGE</p>
       <h2 id="recharge-title">模拟充值</h2>
       <p>演示环境使用模拟资金，不产生真实交易。</p>
+      <p v-if="error" role="alert">{{ error }}</p>
       <label
         >充值金额（元）<input
           v-model="rechargeAmount"
@@ -253,33 +289,36 @@ async function pollWithdrawal(withdrawId, cents) {
     </section>
   </div>
 
-  <!-- 模拟收银台（演示确认页：触发 confirm 即完成入账） -->
-  <div v-if="cashierOrder" class="dialog-backdrop">
-    <section
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="cashier-title"
-    >
-      <p class="eyebrow">MOCK CASHIER</p>
-      <h2 id="cashier-title">模拟收银台</h2>
-      <p>充值单 {{ cashierOrder.rechargeId }}</p>
-      <p>
-        应付金额：¥{{ yuan(cashierOrder.amount) }}（模拟支付，不会真实扣款）
-      </p>
-      <button
-        class="primary-button full-width"
-        :disabled="confirmPending"
-        @click="confirmPaid"
-      >
-        我已支付（触发演示确认）
-      </button>
-    </section>
-  </div>
+  <MockCashier
+    v-if="cashierOrder"
+    operation="recharge"
+    :reference="cashierOrder.rechargeId"
+    :amount="cashierOrder.amount"
+    :pending="confirmPending"
+    :error="error"
+    @confirm="confirmPaid"
+    @close="
+      cashierOrder = null;
+      error = '';
+    "
+  />
+  <MockCashier
+    v-if="withdrawCashier"
+    operation="withdrawal"
+    :reference="withdrawCashier.reference"
+    :amount="withdrawCashier.amount"
+    :pending="withdrawPending"
+    :error="error"
+    @confirm="submitWithdraw"
+    @close="
+      withdrawCashier = null;
+      error = '';
+    "
+  />
 
   <!-- 提现弹窗 -->
   <div
-    v-if="withdrawOpen"
+    v-if="withdrawOpen && !withdrawCashier"
     class="dialog-backdrop"
     @click.self="withdrawOpen = false"
   >
@@ -299,6 +338,7 @@ async function pollWithdrawal(withdrawId, cents) {
       <p class="eyebrow">MOCK WITHDRAW</p>
       <h2 id="withdraw-title">模拟提现</h2>
       <p>金额不能超过可用余额；模拟渠道将在数秒内到账。</p>
+      <p v-if="error" role="alert">{{ error }}</p>
       <label
         >提现金额（元）<input
           v-model="withdrawAmount"
@@ -309,7 +349,7 @@ async function pollWithdrawal(withdrawId, cents) {
       ><button
         class="primary-button full-width"
         :disabled="withdrawPending"
-        @click="submitWithdraw"
+        @click="prepareWithdraw"
       >
         确认提现
       </button>

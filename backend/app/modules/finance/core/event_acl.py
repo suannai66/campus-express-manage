@@ -39,17 +39,26 @@ class RefundCommand:
     amount_cent: int
 
 
-def completed_to_command(event) -> SettleCommand:
+def completed_to_command(event: dict) -> SettleCommand:
     body = event["payload"]
-    return SettleCommand(idempotency_key=f"{event['orderId']}:settle", order_id=event["orderId"],
-                         publisher_uid=body["publisherUid"], courier_uid=body["courierUid"],
-                         amount_cent=body["amount"], base_fee_cent=body["baseFee"],
-                         commission_rate_bps=body["commissionRateBps"])
+    return SettleCommand(
+        idempotency_key=f"{event['orderId']}:settle",
+        order_id=event["orderId"],
+        publisher_uid=body["publisherUid"],
+        courier_uid=body["courierUid"],
+        amount_cent=body["amount"],
+        base_fee_cent=body["baseFee"],
+        commission_rate_bps=body["commissionRateBps"],
+    )
 
 
-def cancelled_to_command(event) -> RefundCommand:
+def cancelled_to_command(event: dict) -> RefundCommand:
     """完整且已验证的 order.cancelled envelope 映射为退款命令。"""
     body = event["payload"]
-    return RefundCommand(idempotency_key=f"{event['orderId']}:refund",
-                         order_id=event["orderId"], publisher_uid=body["publisherUid"],
-                         payment_id=body["paymentId"], amount_cent=body["amount"])
+    return RefundCommand(
+        idempotency_key=f"{event['orderId']}:refund",
+        order_id=event["orderId"],
+        publisher_uid=body["publisherUid"],
+        payment_id=body["paymentId"],
+        amount_cent=body["amount"],
+    )

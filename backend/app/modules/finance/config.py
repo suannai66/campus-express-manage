@@ -21,8 +21,12 @@ def _env_str(name: str, default: str) -> str:
 COMMISSION_RATE_BPS = _env_int("FIN_COMMISSION_RATE_BPS", 1000)
 
 # ---- 提现（FR8 / 团队接口约定 v1.1） ----
-WITHDRAW_SETTLE_SECONDS = _env_int("FIN_WITHDRAW_SETTLE_SECONDS", 3)  # 后台演示任务最早 3 秒后标记 succeeded
-WITHDRAW_PROCESS_INTERVAL_SECONDS = _env_int("FIN_WITHDRAW_PROCESS_INTERVAL_SECONDS", 1)  # 后台扫描间隔
+WITHDRAW_SETTLE_SECONDS = _env_int(
+    "FIN_WITHDRAW_SETTLE_SECONDS", 3
+)  # 后台演示任务最早 3 秒后标记 succeeded
+WITHDRAW_PROCESS_INTERVAL_SECONDS = _env_int(
+    "FIN_WITHDRAW_PROCESS_INTERVAL_SECONDS", 1
+)  # 后台扫描间隔
 
 # ---- 支付渠道（C-06，EV-1） ----
 # v1 走演示路径：POST /api/wallet/recharge/{rechargeId}/confirm，真实回调本期不实现；
