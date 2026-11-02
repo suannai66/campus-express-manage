@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..core.event_acl import SettleCommand
 from ....common import fail
-from ...orders.gateway import OrderGateway
+from ...orders.gateway import OrderGateway, OrderSnapshot
 from ..models import Payment, Settlement
 from ..core.wallet_core import settle_payment
 from ..core.fee_util import split_settlement
@@ -13,37 +13,9 @@ from ..core.fee_util import split_settlement
 
 def settle_order(db: Session, command: SettleCommand) -> dict:
     order = OrderGateway.get_snapshot(db, command.order_id)
-    if (
-        order.status != "delivered"
-        or order.payment_status != "paid"
-        or order.refund_status != "none"
-        or not order.courier_uid
-        or order.publisher_uid == order.courier_uid
-        or (
-            command.publisher_uid,
-            command.courier_uid,
-            command.amount_cent,
-            command.base_fee_cent,
-            command.commission_rate_bps,
-        )
-        != (
-            order.publisher_uid,
-            order.courier_uid,
-            order.amount,
-            order.base_fee,
-            order.commission_bps,
-        )
-    ):
-        fail(409, "ORDER_CONFLICT", "完结事件与订单状态或金额快照不一致")
+    _validate_completed_order(order, command)
     payment = db.get(Payment, order.payment_id) if order.payment_id else None
-    if (
-        payment is None
-        or payment.order_id != order.id
-        or payment.payer_uid != order.publisher_uid
-        or payment.amount != order.amount
-        or payment.status != "succeeded"
-    ):
-        fail(409, "ORDER_CONFLICT", "订单缺少匹配的成功支付事实")
+    _validate_settlement_payment(order, payment)
     existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id))
     if existing:
         if (
@@ -92,3 +64,41 @@ def result(row: Settlement) -> dict:
         "commission": row.commission,
         "status": "succeeded",
     }
+
+
+def _validate_completed_order(order: OrderSnapshot, command: SettleCommand) -> None:
+    """核对完结状态、收款人以及订单金额和费率快照。"""
+    if (
+        order.status != "delivered"
+        or order.payment_status != "paid"
+        or order.refund_status != "none"
+        or not order.courier_uid
+        or order.publisher_uid == order.courier_uid
+        or (
+            command.publisher_uid,
+            command.courier_uid,
+            command.amount_cent,
+            command.base_fee_cent,
+            command.commission_rate_bps,
+        )
+        != (
+            order.publisher_uid,
+            order.courier_uid,
+            order.amount,
+            order.base_fee,
+            order.commission_bps,
+        )
+    ):
+        fail(409, "ORDER_CONFLICT", "完结事件与订单状态或金额快照不一致")
+
+
+def _validate_settlement_payment(order: OrderSnapshot, payment: Payment | None) -> None:
+    """结算只能使用该订单匹配的成功支付事实。"""
+    if (
+        payment is None
+        or payment.order_id != order.id
+        or payment.payer_uid != order.publisher_uid
+        or payment.amount != order.amount
+        or payment.status != "succeeded"
+    ):
+        fail(409, "ORDER_CONFLICT", "订单缺少匹配的成功支付事实")

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ..schemas import PrepayRequest
 from ....common import fail, iso, now, remember, replay
 from ....events import publish
-from ...orders.gateway import OrderGateway
+from ...orders.gateway import OrderGateway, OrderSnapshot
 from ..models import Payment
 from ..core import wallet_core
 from .transaction import wallet_transaction
@@ -38,19 +38,7 @@ def prepay(db: Session, uid: str, request: PrepayRequest, key: str) -> dict:
             response = result(existing)
             remember(db, uid, "payment-prepay", key, body, response)
             return response
-        if (
-            order.status != "pending_payment"
-            or order.payment_status != "paying"
-            or order.payment_request_id != request.paymentRequestId
-            or order.payer_uid != uid
-        ):
-            fail(409, "ORDER_CONFLICT", "订单没有有效的支付预占")
-        if db.scalar(
-            select(Payment.id).where(Payment.order_id == order.id, Payment.status == "succeeded")
-        ):
-            fail(409, "ORDER_CONFLICT", "订单已支付")
-        if type(order.amount) is not int or order.amount <= 0:
-            fail(409, "ORDER_CONFLICT", "订单金额无效")
+        _validate_payment_reservation(db, order, uid, request)
         payment_id = str(uuid4())
         try:
             wallet_core.freeze(db, uid, order.amount, payment_id)
@@ -98,3 +86,22 @@ def query_payment(db: Session, uid: str, payment_id: str) -> dict:
     if row is None or row.payer_uid != uid:
         fail(404, "NOT_FOUND", "支付记录不存在")
     return result(row)
+
+
+def _validate_payment_reservation(
+    db: Session, order: OrderSnapshot, uid: str, request: PrepayRequest
+) -> None:
+    """核对有效预占、成功支付事实及订单金额，保持原校验顺序。"""
+    if (
+        order.status != "pending_payment"
+        or order.payment_status != "paying"
+        or order.payment_request_id != request.paymentRequestId
+        or order.payer_uid != uid
+    ):
+        fail(409, "ORDER_CONFLICT", "订单没有有效的支付预占")
+    if db.scalar(
+        select(Payment.id).where(Payment.order_id == order.id, Payment.status == "succeeded")
+    ):
+        fail(409, "ORDER_CONFLICT", "订单已支付")
+    if type(order.amount) is not int or order.amount <= 0:
+        fail(409, "ORDER_CONFLICT", "订单金额无效")

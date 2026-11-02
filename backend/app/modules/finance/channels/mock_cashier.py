@@ -4,7 +4,7 @@
 未来接入支付宝沙箱后仍可通过 config.CHANNEL_ACTIVE 切回。
 """
 
-from .port import ChannelPort, InternalPaymentResult, PaymentStatus
+from .port import InternalPaymentResult, PaymentStatus
 
 
 class MockCashierAdapter:
