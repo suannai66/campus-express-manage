@@ -45,14 +45,8 @@ def on_order_cancelled(db: Session, event: dict) -> dict:
         fail(422, "VALIDATION_ERROR", "取消事件时间、聚合或支付标识不合法")
     event_id = str(data.eventId)
     digest = fingerprint(event)
-    receipt = db.scalar(
-        select(FinanceReceipt).where(
-            FinanceReceipt.consumer == "finance", FinanceReceipt.event_id == event_id
-        )
-    )
-    if receipt:
-        if receipt.digest != digest:
-            fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
+    receipt = _find_receipt(db, event_id, digest)
+    if receipt is not None:
         return receipt.result
     from ...orders.gateway import OrderGateway
 
@@ -60,16 +54,7 @@ def on_order_cancelled(db: Session, event: dict) -> dict:
     if data.version > order.version:
         fail(409, "ORDER_CONFLICT", "取消事件版本超前于订单事实")
     result = refund_order(db, cancelled_to_command(event))
-    db.add(
-        FinanceReceipt(
-            id=f"finance:{event_id}",
-            consumer="finance",
-            event_id=event_id,
-            digest=digest,
-            result=result,
-        )
-    )
-    db.flush()
+    _save_receipt(db, event_id, digest, result)
     return result
 
 
@@ -112,14 +97,8 @@ def on_order_completed(db: Session, event: dict) -> dict:
     ):
         fail(422, "VALIDATION_ERROR", "完结事件时间、聚合或金额不合法")
     event_id, digest = str(data.eventId), fingerprint(event)
-    receipt = db.scalar(
-        select(FinanceReceipt).where(
-            FinanceReceipt.consumer == "finance", FinanceReceipt.event_id == event_id
-        )
-    )
-    if receipt:
-        if receipt.digest != digest:
-            fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
+    receipt = _find_receipt(db, event_id, digest)
+    if receipt is not None:
         return receipt.result
     order = OrderGateway.get_snapshot(db, data.orderId)
     if data.version > order.version:
@@ -127,6 +106,24 @@ def on_order_completed(db: Session, event: dict) -> dict:
     if data.payload.pricingVersion != order.pricing_version or data.payload.tip != order.tip:
         fail(409, "ORDER_CONFLICT", "完结事件费率版本或小费与订单不一致")
     result = settle_order(db, completed_to_command(event))
+    _save_receipt(db, event_id, digest, result)
+    return result
+
+
+def _find_receipt(db: Session, event_id: str, digest: str) -> FinanceReceipt | None:
+    """复用已消费结果，同标识不同内容仍拒绝处理。"""
+    receipt = db.scalar(
+        select(FinanceReceipt).where(
+            FinanceReceipt.consumer == "finance", FinanceReceipt.event_id == event_id
+        )
+    )
+    if receipt is not None and receipt.digest != digest:
+        fail(409, "IDEMPOTENCY_CONFLICT", "同一事件标识的内容发生变化")
+    return receipt
+
+
+def _save_receipt(db: Session, event_id: str, digest: str, result: dict) -> None:
+    """回执与资金处理共享调用方事务，不自行提交。"""
     db.add(
         FinanceReceipt(
             id=f"finance:{event_id}",
@@ -137,4 +134,3 @@ def on_order_completed(db: Session, event: dict) -> dict:
         )
     )
     db.flush()
-    return result

@@ -48,6 +48,17 @@ def query_transactions(
     rows = db.scalars(
         stmt.order_by(Ledger.id.desc()).offset((page - 1) * page_size).limit(page_size)
     ).all()
+    order_maps = _load_order_maps(db, rows)
+    return {
+        "items": [_transaction_item(row, order_maps) for row in rows],
+        "page": page,
+        "pageSize": page_size,
+        "total": total,
+    }
+
+
+def _load_order_maps(db: Session, rows) -> dict:
+    """批量关联订单，查询次数不随本页流水条数增长。"""
     payment_orders = dict(
         db.execute(
             select(Payment.id, Payment.order_id).where(
@@ -71,26 +82,22 @@ def query_transactions(
             )
         ).all()
     )
-    order_maps = {
+    return {
         "payment": payment_orders,
         "refund": refund_orders,
         "settlement": settlement_orders,
     }
+
+
+def _transaction_item(row: Ledger, order_maps: dict) -> dict:
+    """统一流水展示字段及 UTC 时间转换。"""
     return {
-        "items": [
-            {
-                "transactionId": str(row.id),
-                "type": row.biz_type,
-                "direction": "in" if row.delta > 0 else "out",
-                "amount": abs(row.delta),
-                "balanceAfter": row.balance_after,
-                "orderId": order_maps.get(row.biz_type, {}).get(row.idempotency_key),
-                "referenceId": row.idempotency_key,
-                "createdAt": iso_utc(row.created_at),
-            }
-            for row in rows
-        ],
-        "page": page,
-        "pageSize": page_size,
-        "total": total,
+        "transactionId": str(row.id),
+        "type": row.biz_type,
+        "direction": "in" if row.delta > 0 else "out",
+        "amount": abs(row.delta),
+        "balanceAfter": row.balance_after,
+        "orderId": order_maps.get(row.biz_type, {}).get(row.idempotency_key),
+        "referenceId": row.idempotency_key,
+        "createdAt": iso_utc(row.created_at),
     }
