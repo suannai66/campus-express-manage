@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ..core.event_acl import RefundCommand
 from ....common import fail, iso, now
 from ....events import publish
-from ...orders.gateway import OrderGateway
+from ...orders.gateway import OrderGateway, OrderSnapshot
 from ..models import Payment, Refund
 from ..core.wallet_core import release_payment
 
@@ -20,24 +20,10 @@ def refund_order(db: Session, command: RefundCommand) -> dict:
     ):
         fail(409, "ORDER_CONFLICT", "取消事件与订单事实不一致")
     if command.payment_id is None:
-        paid = db.scalar(
-            select(Payment.id).where(Payment.order_id == order.id, Payment.status == "succeeded")
-        )
-        if order.payment_status != "unpaid" or order.payment_id is not None or paid:
-            fail(409, "ORDER_CONFLICT", "未支付取消与支付事实冲突")
+        _validate_unpaid_cancellation(db, order)
         return {"orderId": order.id, "refunded": False}
     payment = db.get(Payment, command.payment_id)
-    if (
-        payment is None
-        or payment.order_id != order.id
-        or payment.payer_uid != command.publisher_uid
-        or payment.amount != command.amount_cent
-        or payment.status != "succeeded"
-        or order.payment_status != "paid"
-        or order.payment_id != payment.id
-        or order.refund_status not in {"processing", "succeeded"}
-    ):
-        fail(409, "ORDER_CONFLICT", "退款事件与支付事实不一致")
+    _validate_refund_payment(order, payment, command)
     existing = db.scalar(select(Refund).where(Refund.order_id == order.id))
     if existing:
         if (existing.payment_id, existing.payer_uid, existing.amount) != (
@@ -80,3 +66,29 @@ def refund_order(db: Session, command: RefundCommand) -> dict:
     publish(db, event)
     db.flush()
     return {"orderId": order.id, "refundId": refund_id, "refunded": True}
+
+
+def _validate_unpaid_cancellation(db: Session, order: OrderSnapshot) -> None:
+    """未支付取消必须同时匹配订单状态与实际支付记录。"""
+    paid = db.scalar(
+        select(Payment.id).where(Payment.order_id == order.id, Payment.status == "succeeded")
+    )
+    if order.payment_status != "unpaid" or order.payment_id is not None or paid:
+        fail(409, "ORDER_CONFLICT", "未支付取消与支付事实冲突")
+
+
+def _validate_refund_payment(
+    order: OrderSnapshot, payment: Payment | None, command: RefundCommand
+) -> None:
+    """核对退款所依据的订单和成功支付事实。"""
+    if (
+        payment is None
+        or payment.order_id != order.id
+        or payment.payer_uid != command.publisher_uid
+        or payment.amount != command.amount_cent
+        or payment.status != "succeeded"
+        or order.payment_status != "paid"
+        or order.payment_id != payment.id
+        or order.refund_status not in {"processing", "succeeded"}
+    ):
+        fail(409, "ORDER_CONFLICT", "退款事件与支付事实不一致")
