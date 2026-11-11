@@ -121,7 +121,8 @@ def orders(request: Request, scope: Literal["hall", "mine"] = "hall", status: st
         fail(422, "VALIDATION_ERROR", "筛选下限不能大于上限")
     conditions = []
     if scope == "hall":
-        conditions += [Order.status == "pending", Order.payment_status == "paid", Order.publisher_uid != user.uid]
+        conditions += [Order.status == "pending", Order.payment_status == "paid",
+                       Order.publisher_uid != user.uid, Order.expected_at > iso(now())]
     else:
         if role == "publisher":
             conditions.append(Order.publisher_uid == user.uid)

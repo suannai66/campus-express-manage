@@ -192,6 +192,31 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(self.get(path, "bob").json()["total"], 1)
         self.assertEqual(self.get(path + "&expectedFrom=" + order["expectedAt"] + "&expectedTo=" + order["expectedAt"], "bob").json()["total"], 1)
         self.assertEqual(self.get(path.replace("zone_qinyuan", "zone_public"), "bob").json()["total"], 0)
+    def test_hall_hides_at_deadline_but_preserves_owner_history(self):
+        deadline = now() + timedelta(hours=1)
+        order, _ = self.paid({**self.body, "expectedAt": iso(deadline)})
+        for moment, expected in [(deadline - timedelta(microseconds=1), 1), (deadline, 0),
+                                 (deadline + timedelta(hours=1), 0)]:
+            with self.subTest(moment=moment), patch("app.modules.orders.api.now", return_value=moment):
+                self.assertEqual(self.get("/api/orders", "bob").json()["total"], expected)
+                self.assertEqual(self.get("/api/orders?scope=mine").json()["total"], 1)
+                latest = self.get(f"/api/orders/{order['orderId']}").json()
+                self.assertEqual((latest["status"], latest["paymentStatus"], latest["version"]),
+                                 ("pending", "paid", order["version"]))
+
+    def test_hall_deadline_applies_before_total_filters_and_pagination(self):
+        deadline = now() + timedelta(hours=1)
+        for index in range(22):
+            self.paid({**self.body, "expectedAt": iso(deadline), "note": str(index)})
+        future, _ = self.paid({**self.body, "expectedAt": iso(deadline + timedelta(hours=1))})
+        zero, _ = self.paid({**self.body, "expectedAt": iso(deadline + timedelta(hours=2)), "tip": 0})
+        with patch("app.modules.orders.api.now", return_value=deadline):
+            result = self.get("/api/orders", "bob").json()
+            self.assertEqual((result["total"], result["pageSize"]), (2, 20))
+            self.assertEqual([row["orderId"] for row in result["items"]], [future["orderId"], zero["orderId"]])
+            self.assertEqual(self.get("/api/orders?page=2", "bob").json()["items"], [])
+            self.assertEqual(self.get("/api/orders?tipMin=235", "bob").json()["total"], 1)
+            self.assertEqual(self.get("/api/orders?scope=mine").json()["total"], 24)
     def test_filter_errors(self):
         for query in ["tipMin=2&tipMax=1", "tipMin=2.5", "tipMax=99901", "status=accepted", "expectedFrom=2026-01-01T12:00", "stationId=unknown", "address=302", "pageSize=101", "page=0"]:
             self.assertEqual(self.get("/api/orders?" + query).status_code, 422, query)
