@@ -31,6 +31,6 @@ export const orderApi = {
 export const sizeLabels = { small: "小件", medium: "中件", large: "大件" };
 export const formatTime = (value) =>
   new Date(value).toLocaleString("zh-CN", {
-    timeZone: "Asia/Singapore",
+    timeZone: "Asia/Shanghai",
     hour12: false,
   });

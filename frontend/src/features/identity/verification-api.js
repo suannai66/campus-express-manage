@@ -9,7 +9,7 @@ export const statusLabels = {
 export const formatTime = (value) =>
   value
     ? new Date(value).toLocaleString("zh-CN", {
-        timeZone: "Asia/Singapore",
+        timeZone: "Asia/Shanghai",
         hour12: false,
       })
     : "—";
