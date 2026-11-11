@@ -11,9 +11,25 @@ from ...common import Input, fail
 from ...database import get_db
 from .dependencies import current_identity
 from . import verification as service
-from .models import VerificationPhoto
+from .models import VerificationPhoto, VerificationState
 
 router = APIRouter(prefix="/api", tags=["verification"])
+
+
+@router.get("/auth/verification-demo")
+def demo_capability(request: Request, user=Depends(current_identity)):
+    return {"enabled": getattr(request.app.state, "finance_mode", None) == "demo"}
+
+
+@router.post("/auth/verification-demo/approve")
+def demo_approve(request: Request, user=Depends(current_identity), db: Session = Depends(get_db)):
+    if getattr(request.app.state, "finance_mode", None) != "demo":
+        fail(403, "FORBIDDEN", "仅演示模式允许自动审核")
+    validate_query(request)
+    state = db.get(VerificationState, user.uid)
+    if not state or state.status != "pending":
+        fail(409, "VERIFICATION_CONFLICT", "请先提交认证资料，且仅能通过待审核申请")
+    return service.review_application(db, state.application_id, user.uid, "approved", None, state.version)
 
 
 class SubmitFields(Input):

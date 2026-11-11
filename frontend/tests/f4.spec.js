@@ -15,9 +15,15 @@ const headers = (uid) => ({
   Authorization: `Bearer ${uid}`,
   "Idempotency-Key": crypto.randomUUID(),
 });
-async function seed(request, uid = "alice", tip = 235) {
+async function seed(
+  request,
+  uid = "alice",
+  tip = 235,
+  company = "顺丰速运",
+  expectedAt,
+) {
   const result = await request.post("/api/orders", {
-    data: draft(tip),
+    data: { ...draft(tip), company, ...(expectedAt ? { expectedAt } : {}) },
     headers: headers(uid),
   });
   expect(result.status()).toBe(201);
@@ -44,6 +50,42 @@ async function visit(page, uid = "bob") {
   );
   await page.goto("/tasks");
 }
+
+test("F4 卡片显示总费用，明细包含运费和零或非零小费", async ({
+  page,
+  request,
+}) => {
+  const orders = [];
+  for (const tip of [0, 235]) {
+    const company = `费用演示${tip}`;
+    orders.push(await seed(request, "alice", tip, company));
+  }
+  await visit(page);
+  for (const order of orders) {
+    const card = page.locator(".task-card").filter({ hasText: order.company });
+    await expect(card.locator(".reward-label")).toHaveText("总费用");
+    await expect(card.locator(".reward")).toHaveText(
+      `¥${(order.amount / 100).toFixed(2)}`,
+    );
+    await card.getByText("费用明细", { exact: true }).click();
+    const breakdown = card.locator(".fee-popover");
+    await expect(breakdown).toBeVisible();
+    await expect(breakdown).toContainText(
+      `运费¥${(order.baseFee / 100).toFixed(2)}`,
+    );
+    await expect(breakdown).toContainText(
+      `小费¥${(order.tip / 100).toFixed(2)}`,
+    );
+    await expect(breakdown).toContainText(
+      `总费用¥${(order.amount / 100).toFixed(2)}`,
+    );
+    await card.getByRole("button", { name: "查看详情" }).click();
+    await expect(page.getByRole("dialog")).toContainText(
+      `¥${(order.amount / 100).toFixed(2)}`,
+    );
+    await page.getByRole("button", { name: "知道了" }).click();
+  }
+});
 test("F4 组合筛选和公开详情不泄露取件码、门牌", async ({ page, request }) => {
   await seed(request);
   await visit(page);
@@ -71,6 +113,35 @@ test("F4 组合筛选和公开详情不泄露取件码、门牌", async ({ page,
     fullPage: true,
   });
 });
+test("F4 任务到期后自动移除卡片及已打开详情，保留本人订单", async ({
+  page,
+  request,
+}) => {
+  const company = `期限演示${crypto.randomUUID().slice(0, 8)}`;
+  const order = await seed(
+    request,
+    "alice",
+    235,
+    company,
+    new Date(Date.now() + 12000).toISOString(),
+  );
+  await visit(page);
+  const card = page.locator(".task-card").filter({ hasText: company });
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "查看详情" }).click();
+  await expect(page.getByRole("dialog")).toContainText(company);
+  await expect(card).toHaveCount(0, { timeout: 25000 });
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  const saved = await request.get(`/api/orders/${order.orderId}`, {
+    headers: headers("alice"),
+  });
+  expect(saved.status()).toBe(200);
+  expect(await saved.json()).toMatchObject({
+    status: "pending",
+    paymentStatus: "paid",
+  });
+});
+
 test("F4 空态和筛选边界", async ({ page }) => {
   await visit(page);
   await page.getByLabel("小费下限（元）").fill("900");

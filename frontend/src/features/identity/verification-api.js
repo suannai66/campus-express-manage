@@ -14,6 +14,9 @@ export const formatTime = (value) =>
       })
     : "—";
 export const verificationApi = {
+  demoCapability: () => request("/auth/verification-demo"),
+  demoApprove: () =>
+    request("/auth/verification-demo/approve", { method: "POST" }),
   current: () => request("/auth/current"),
   status: () => request("/auth/verify-status"),
   history: (page) =>

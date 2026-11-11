@@ -69,12 +69,16 @@ onBeforeUnmount(() => dialog.value?.close());
           </dd>
         </div>
         <div>
-          <dt>基础运费</dt>
+          <dt>运费</dt>
           <dd>¥{{ money(task.baseFee) }}</dd>
         </div>
         <div>
           <dt>代取小费</dt>
           <dd class="detail-tip">¥{{ money(task.tip) }}</dd>
+        </div>
+        <div>
+          <dt>总费用</dt>
+          <dd class="detail-tip">¥{{ money(task.amount) }}</dd>
         </div>
         <div>
           <dt>备注</dt>

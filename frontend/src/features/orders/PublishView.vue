@@ -32,6 +32,7 @@ const order = ref(null),
   recent = ref([]),
   fees = ref(null),
   loading = ref(true),
+  refreshingOrder = ref(false),
   busy = ref(false),
   error = ref(""),
   quoteError = ref(""),
@@ -42,6 +43,7 @@ let quoteTimer,
   pollTimer,
   generation = 0,
   orderGeneration = 0,
+  refreshGeneration = 0,
   disposed = false,
   requestKey = "",
   snapshot = "",
@@ -182,6 +184,8 @@ function report(cause) {
     context.value.verified = false;
 }
 async function loadOrder(id) {
+  refreshGeneration++;
+  refreshingOrder.value = false;
   generation++;
   clearTimeout(quoteTimer);
   const version = ++orderGeneration;
@@ -224,6 +228,7 @@ async function submit() {
   error.value = "";
   if (!canPublish.value || Object.keys(errors.value).length) return;
   busy.value = true;
+  const version = ++orderGeneration;
   generation++;
   clearTimeout(quoteTimer);
   try {
@@ -233,16 +238,20 @@ async function submit() {
       snapshot = serialized;
       requestKey = crypto.randomUUID();
     }
-    order.value = await orderApi.create(body, requestKey);
+    const result = await orderApi.create(body, requestKey);
+    if (disposed || version !== orderGeneration) return;
+    order.value = result;
     await router.replace({
       path: "/publish",
       query: { orderId: order.value.orderId },
     });
-    recent.value = (await orderApi.mine()).items;
+    if (disposed || version !== orderGeneration) return;
+    const latest = await orderApi.mine();
+    if (!disposed && version === orderGeneration) recent.value = latest.items;
   } catch (cause) {
-    report(cause);
+    if (!disposed && version === orderGeneration) report(cause);
   } finally {
-    busy.value = false;
+    if (!disposed && version === orderGeneration) busy.value = false;
   }
 }
 async function pay() {
@@ -282,10 +291,18 @@ async function pay() {
 }
 async function refreshOrder() {
   if (!order.value || disposed) return;
+  const id = order.value.orderId,
+    contextVersion = orderGeneration,
+    requestVersion = ++refreshGeneration;
+  const isCurrent = () =>
+    !disposed &&
+    order.value?.orderId === id &&
+    contextVersion === orderGeneration &&
+    requestVersion === refreshGeneration;
+  refreshingOrder.value = true;
   try {
-    const id = order.value.orderId,
-      latest = await orderApi.detail(id);
-    if (disposed || order.value?.orderId !== id) return;
+    const latest = await orderApi.detail(id);
+    if (!isCurrent() || latest.version < order.value.version) return;
     if (
       latest.paymentStatus === "unpaid" &&
       order.value.paymentStatus === "paying"
@@ -296,10 +313,15 @@ async function refreshOrder() {
     order.value = latest;
     if (latest.paymentStatus === "paid") error.value = "";
   } catch (cause) {
-    if (!disposed) report(cause);
+    if (isCurrent()) report(cause);
+  } finally {
+    if (isCurrent()) refreshingOrder.value = false;
   }
 }
 async function newOrder() {
+  orderGeneration++;
+  refreshGeneration++;
+  refreshingOrder.value = false;
   order.value = null;
   reserveKey = "";
   payKey = "";
@@ -526,8 +548,12 @@ onBeforeUnmount(() => {
               ? "查询并继续支付"
               : "去支付 ¥" + money(order.amount)
           }}</button
-        ><button class="outline-button" :disabled="busy" @click="refreshOrder">
-          刷新状态</button
+        ><button
+          class="outline-button"
+          :disabled="busy || refreshingOrder"
+          @click="refreshOrder"
+        >
+          {{ refreshingOrder ? "正在刷新…" : "刷新状态" }}</button
         ><button class="text-button" :disabled="busy" @click="newOrder">
           再发一单
         </button>

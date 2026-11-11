@@ -19,6 +19,11 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 STATUSES = {"pending_payment", "pending", "accepted", "picking_up", "delivering", "delivered", "cancelled"}
 
 
+def validate_query(request, allowed=()):
+    if set(request.query_params) - set(allowed):
+        fail(422, "VALIDATION_ERROR", "查询包含未声明字段")
+
+
 def validate_delivery_time(body):
     if not now() < body.expectedAt <= now() + timedelta(days=7):
         fail(422, "VALIDATION_ERROR", "请选择未来七天内的送达时间", {"expectedAt": "请选择未来七天内的送达时间"})
@@ -44,7 +49,8 @@ def detail_view(order, uid):
 
 
 @router.get("/locations")
-def locations():
+def locations(request: Request):
+    validate_query(request)
     return {"stations": [{"id": key, "name": value} for key, value in STATIONS.items()],
             "deliveryAreas": [{"id": key, "name": value} for key, value in AREAS.items()]}
 
@@ -52,6 +58,7 @@ def locations():
 @router.post("/quote")
 def quote(body: OrderDraft, request: Request, user=Depends(current), db: Session = Depends(get_db)):
     require_verified(user)
+    validate_query(request)
     validate_delivery_time(body)
     return integrations.quote(body, request)
 
@@ -59,6 +66,7 @@ def quote(body: OrderDraft, request: Request, user=Depends(current), db: Session
 @router.post("", status_code=201)
 def create(body: OrderDraft, request: Request, idempotency_key: Key, user=Depends(current), db: Session = Depends(get_db)):
     require_verified(user)
+    validate_query(request)
     payload = body.model_dump(mode="json")
     result = replay(db, user.uid, "create-order", idempotency_key, payload)
     if result:
@@ -99,8 +107,7 @@ def orders(request: Request, scope: Literal["hall", "mine"] = "hall", status: st
            role: Literal["publisher", "courier", "all"] = "all", page: int = Query(1, ge=1),
            pageSize: int = Query(20, ge=1, le=100), user=Depends(current), db: Session = Depends(get_db)):
     allowed = {"scope", "status", "stationId", "deliveryAreaId", "tipMin", "tipMax", "expectedFrom", "expectedTo", "role", "page", "pageSize"}
-    if set(request.query_params) - allowed:
-        fail(422, "VALIDATION_ERROR", "查询包含未声明字段")
+    validate_query(request, allowed)
     for name in ("tipMin", "tipMax", "page", "pageSize"):
         raw = request.query_params.get(name)
         if raw is not None and (not raw.isascii() or not raw.isdigit()):
@@ -114,7 +121,8 @@ def orders(request: Request, scope: Literal["hall", "mine"] = "hall", status: st
         fail(422, "VALIDATION_ERROR", "筛选下限不能大于上限")
     conditions = []
     if scope == "hall":
-        conditions += [Order.status == "pending", Order.payment_status == "paid", Order.publisher_uid != user.uid]
+        conditions += [Order.status == "pending", Order.payment_status == "paid",
+                       Order.publisher_uid != user.uid, Order.expected_at > iso(now())]
     else:
         if role == "publisher":
             conditions.append(Order.publisher_uid == user.uid)
@@ -138,13 +146,15 @@ def orders(request: Request, scope: Literal["hall", "mine"] = "hall", status: st
 
 
 @router.get("/{order_id}")
-def detail(order_id: str, user=Depends(current), db: Session = Depends(get_db)):
+def detail(order_id: str, request: Request, user=Depends(current), db: Session = Depends(get_db)):
+    validate_query(request)
     return detail_view(OrderGateway.related(db, order_id, user.uid), user.uid)
 
 
 @router.post("/{order_id}/payment-request")
-def payment_request(order_id: str, body: VersionInput, idempotency_key: Key,
+def payment_request(order_id: str, body: VersionInput, request: Request, idempotency_key: Key,
                     user=Depends(current), db: Session = Depends(get_db)):
+    validate_query(request)
     operation = f"payment-request:{order_id}"
     result = replay(db, user.uid, operation, idempotency_key, body.model_dump())
     if result:

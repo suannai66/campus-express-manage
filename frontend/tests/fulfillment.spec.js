@@ -12,6 +12,75 @@ const keyed = (user) => ({
   ...auth(user),
   "Idempotency-Key": crypto.randomUUID(),
 });
+
+test("B 真实发布页面：余额不足恢复、支付入厅、自单隐藏及接单自动移除", async ({
+  page,
+  request,
+  context,
+}) => {
+  const publisher = await student(request),
+    courier = await student(request);
+  const company = `B联调${randomInt(1000000)}`;
+  await visit(page, publisher, "/publish");
+  await page.getByLabel(/快递公司/).fill(company);
+  await page.getByLabel(/^取件点/).selectOption("station_cainiao");
+  await page.getByLabel(/^取件码/).fill("B-private-code");
+  await page.getByLabel(/送达区域/).selectOption("zone_qinyuan");
+  await page.getByLabel(/详细送达地址/).fill("B-private-room302");
+  await page
+    .getByLabel(/期望送达时间/)
+    .fill(new Date(Date.now() + 10 * 3600000).toISOString().slice(0, 16));
+  await page.getByLabel(/小费金额/).fill("2.35");
+  const created = page.waitForResponse(
+    (r) =>
+      r.request().method() === "POST" &&
+      new URL(r.url()).pathname === "/api/orders",
+  );
+  await page.getByRole("button", { name: "创建订单", exact: true }).click();
+  const response = await created;
+  expect(response.status()).toBe(201);
+  const order = await response.json();
+  expect(order.tip).toBe(235);
+  expect(order.amount).toBe(order.baseFee + 235);
+  const hall = await context.newPage();
+  await visit(hall, courier, "/tasks");
+  const card = hall.locator(".task-card").filter({ hasText: company });
+  await expect(card).toHaveCount(0);
+  await page.getByRole("button", { name: /去支付/ }).click();
+  await page.getByRole("button", { name: "确认支付", exact: true }).click();
+  await expect(page.locator(".error-banner")).toContainText(
+    "余额不足，请到钱包充值",
+  );
+  await expect
+    .poll(async () => (await latest(request, order, publisher)).paymentStatus)
+    .toBe("unpaid");
+  const recharge = await request.post("/api/wallet/recharge", {
+    headers: keyed(publisher),
+    data: { amount: 10000 },
+  });
+  expect(recharge.status()).toBe(201);
+  const confirmed = await request.post(
+    `/api/wallet/recharge/${(await recharge.json()).rechargeId}/confirm`,
+    { headers: keyed(publisher) },
+  );
+  expect(confirmed.status()).toBe(200);
+  await page.getByRole("button", { name: /去支付|查询并继续支付/ }).click();
+  await page.getByRole("button", { name: "确认支付", exact: true }).click();
+  await expect(page.locator(".order-result .soft-tag")).toHaveText("待接单", {
+    timeout: 15000,
+  });
+  await expect(card).toBeVisible({ timeout: 15000 });
+  await expect(hall.locator("main")).not.toContainText("B-private-code");
+  await expect(hall.locator("main")).not.toContainText("B-private-room302");
+  await page.goto("/tasks");
+  await expect(page.locator(".refresh-info")).toBeVisible();
+  await expect(
+    page.locator(".task-card").filter({ hasText: company }),
+  ).toHaveCount(0);
+  await accept(request, await latest(request, order, publisher), courier);
+  await expect(card).toHaveCount(0, { timeout: 15000 });
+  await hall.close();
+});
 async function login(request, phone) {
   expect(
     (

@@ -30,12 +30,21 @@ class OrderDraft(Input):
             raise ValueError("重量须大于 0 且不超过 30 kg")
         return value
 
-    @field_validator("expectedAt")
+    @field_validator("expectedAt", mode="before")
     @classmethod
     def valid_time(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("送达时间必须是带时区的 ISO 8601 字符串")
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("送达时间必须是带时区的 ISO 8601 字符串") from None
         if value.tzinfo is None:
             raise ValueError("送达时间必须带时区")
-        return value.astimezone(timezone.utc)
+        try:
+            return value.astimezone(timezone.utc)
+        except OverflowError:
+            raise ValueError("送达时间超出有效范围") from None
 
 
 class Quote(Input):

@@ -44,7 +44,9 @@ const tasks = computed(() =>
     station: order.stationName,
     building: order.deliveryAreaName,
     size: sizeLabels[order.size],
-    reward: order.tip / 100,
+    amount: order.amount,
+    baseFee: order.baseFee,
+    tip: order.tip,
     time: formatTime(order.expectedAt) + "前送达",
     company: order.company,
     initials: [...order.company][0],
@@ -312,7 +314,7 @@ onBeforeUnmount(() => {
         >
       </h2>
       <p>
-        仅展示已支付的待接单需求，不包含自己发布的订单。时间按北京时间（UTC+8）显示。
+        仅展示已支付、未超过期望送达时间的待接单需求，不包含自己发布的订单。时间按北京时间（UTC+8）显示。
       </p>
     </div>
     <button

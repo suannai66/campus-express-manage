@@ -94,6 +94,52 @@ class OrderTests(unittest.TestCase):
     def test_delivery_time(self):
         for value in [iso(now() - timedelta(seconds=1)), iso(now() + timedelta(days=8)), "2030-01-01T12:00"]:
             self.assertEqual(self.create({**self.body, "expectedAt": value}).status_code, 422)
+    def test_delivery_time_requires_iso_string_before_coercion(self):
+        future = now() + timedelta(hours=2)
+        seconds = int(future.timestamp())
+        for value in [seconds, seconds * 1000, seconds + 0.5, str(seconds), str(seconds * 1000),
+                      True, None, future.replace(tzinfo=None).isoformat(), future.date().isoformat()]:
+            for path in ["/api/orders", "/api/orders/quote"]:
+                with self.subTest(path=path, value=value):
+                    response = self.client.post(path, json={**self.body, "expectedAt": value}, headers=self.headers())
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertEqual(response.json()["code"], "VALIDATION_ERROR")
+                    self.assertIn("expectedAt", response.json()["fields"])
+        with self.sessions() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 0)
+
+    def test_delivery_time_accepts_iso_offsets_and_normalizes_utc(self):
+        from datetime import timezone
+        future = now() + timedelta(hours=2)
+        for value in [iso(future), future.astimezone(timezone(timedelta(hours=8))).isoformat()]:
+            draft = {**self.body, "expectedAt": value}
+            quote = self.client.post("/api/orders/quote", json=draft, headers=self.headers())
+            self.assertEqual(quote.status_code, 200, quote.text)
+            response = self.create(draft)
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(response.json()["expectedAt"], iso(future))
+
+    def test_all_order_endpoints_reject_undeclared_query_fields(self):
+        order = self.create().json()
+        cases = [
+            ("GET", "/api/orders/locations", None),
+            ("GET", "/api/orders", None),
+            ("GET", f"/api/orders/{order['orderId']}", None),
+            ("POST", "/api/orders/quote", self.body),
+            ("POST", "/api/orders", self.body),
+            ("POST", f"/api/orders/{order['orderId']}/payment-request", {"version": 1}),
+        ]
+        for method, path, body in cases:
+            with self.subTest(method=method, path=path):
+                response = self.client.request(method, path + "?unexpected=1", json=body, headers=self.headers())
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["code"], "VALIDATION_ERROR")
+        self.assertEqual(self.client.get("/api/orders/locations").status_code, 200)
+        self.assertEqual(self.client.get("/api/orders/locations?unexpected=1").status_code, 422)
+        self.assertEqual(self.get(f"/api/orders/{order['orderId']}").json()["version"], 1)
+        with self.sessions() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 1)
+
     def test_identity_admission(self):
         self.assertEqual(self.client.get("/api/orders").status_code, 401)
         self.assertEqual(self.create(uid="unverified").json()["code"], "VERIFICATION_REQUIRED")
@@ -146,6 +192,31 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(self.get(path, "bob").json()["total"], 1)
         self.assertEqual(self.get(path + "&expectedFrom=" + order["expectedAt"] + "&expectedTo=" + order["expectedAt"], "bob").json()["total"], 1)
         self.assertEqual(self.get(path.replace("zone_qinyuan", "zone_public"), "bob").json()["total"], 0)
+    def test_hall_hides_at_deadline_but_preserves_owner_history(self):
+        deadline = now() + timedelta(hours=1)
+        order, _ = self.paid({**self.body, "expectedAt": iso(deadline)})
+        for moment, expected in [(deadline - timedelta(microseconds=1), 1), (deadline, 0),
+                                 (deadline + timedelta(hours=1), 0)]:
+            with self.subTest(moment=moment), patch("app.modules.orders.api.now", return_value=moment):
+                self.assertEqual(self.get("/api/orders", "bob").json()["total"], expected)
+                self.assertEqual(self.get("/api/orders?scope=mine").json()["total"], 1)
+                latest = self.get(f"/api/orders/{order['orderId']}").json()
+                self.assertEqual((latest["status"], latest["paymentStatus"], latest["version"]),
+                                 ("pending", "paid", order["version"]))
+
+    def test_hall_deadline_applies_before_total_filters_and_pagination(self):
+        deadline = now() + timedelta(hours=1)
+        for index in range(22):
+            self.paid({**self.body, "expectedAt": iso(deadline), "note": str(index)})
+        future, _ = self.paid({**self.body, "expectedAt": iso(deadline + timedelta(hours=1))})
+        zero, _ = self.paid({**self.body, "expectedAt": iso(deadline + timedelta(hours=2)), "tip": 0})
+        with patch("app.modules.orders.api.now", return_value=deadline):
+            result = self.get("/api/orders", "bob").json()
+            self.assertEqual((result["total"], result["pageSize"]), (2, 20))
+            self.assertEqual([row["orderId"] for row in result["items"]], [future["orderId"], zero["orderId"]])
+            self.assertEqual(self.get("/api/orders?page=2", "bob").json()["items"], [])
+            self.assertEqual(self.get("/api/orders?tipMin=235", "bob").json()["total"], 1)
+            self.assertEqual(self.get("/api/orders?scope=mine").json()["total"], 24)
     def test_filter_errors(self):
         for query in ["tipMin=2&tipMax=1", "tipMin=2.5", "tipMax=99901", "status=accepted", "expectedFrom=2026-01-01T12:00", "stationId=unknown", "address=302", "pageSize=101", "page=0"]:
             self.assertEqual(self.get("/api/orders?" + query).status_code, 422, query)
