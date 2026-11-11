@@ -55,6 +55,27 @@ class VerificationTests(unittest.TestCase):
     def state(self):
         return self.client.get("/api/auth/verify-status", headers=self.owner).json()
 
+    def test_demo_self_approval_reuses_review_and_is_owner_scoped(self):
+        path = "/api/auth/verification-demo/approve"
+        self.assertEqual(self.client.post(path).status_code, 401)
+        self.assertEqual(self.client.post(path, headers=self.owner).status_code, 409)
+        self.submit()
+        self.assertEqual(self.client.post(path, headers=self.other).status_code, 409)
+        self.assertEqual(self.client.post(path, headers=self.owner).status_code, 200)
+        self.assertTrue(self.state()["verified"])
+        self.assertEqual(self.client.post(path, headers=self.owner).status_code, 409)
+        with self.sessions() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Review)), 1)
+            self.assertEqual(db.scalar(select(func.count()).select_from(Notification)), 1)
+            self.assertEqual(db.scalar(select(Review)).reviewer_uid, self.uid)
+
+    def test_demo_approval_disabled_in_production(self):
+        self.submit()
+        with patch.object(self.client.app.state, "finance_mode", "production"):
+            self.assertFalse(self.client.get("/api/auth/verification-demo", headers=self.owner).json()["enabled"])
+            self.assertEqual(self.client.post("/api/auth/verification-demo/approve", headers=self.owner).status_code, 403)
+        self.assertEqual(self.state()["status"], "pending")
+
     def test_submit_and_approve_updates_state_audit_and_notification(self):
         result = self.submit()
         self.assertEqual(result.status_code, 201, result.text)
