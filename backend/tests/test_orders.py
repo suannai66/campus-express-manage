@@ -17,7 +17,7 @@ from app.modules.orders.gateway import OrderGateway
 from app.modules.orders.handlers import EventReceipt, handle
 from fixtures import TestIdentity, TestPricing
 
-class OrderTests(unittest.TestCase):
+class OrderTestCase(unittest.TestCase):
     def setUp(self):
         self.events_patch = patch("app.main.start_processor")
         self.events_patch.start()
@@ -61,6 +61,8 @@ class OrderTests(unittest.TestCase):
         event = self.event(order, self.reserve(order).json())
         self.consume(event)
         return self.get(f"/api/orders/{order['orderId']}").json(), event
+
+class OrderTests(OrderTestCase):
     def test_creation_snapshot(self):
         response = self.create(); self.assertEqual(response.status_code, 201, response.text)
         order = response.json()
