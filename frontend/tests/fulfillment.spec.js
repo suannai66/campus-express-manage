@@ -138,7 +138,7 @@ async function open(page, order) {
   );
   await expect(page.locator(".detail dl")).toBeVisible();
 }
-test("真实账号：大厅接单、履约、双向评价、信用刷新与低分准入", async ({
+test("真实账号：无取件码履约、发布者确认收货、双向评价与低分准入", async ({
   page,
   request,
 }) => {
@@ -158,16 +158,33 @@ test("真实账号：大厅接单、履约、双向评价、信用刷新与低�
   await expect(page.getByText(/接单成功/)).toBeVisible();
   await page.goto("/orders");
   await open(page, order);
+  await expect(page.locator(".detail")).not.toContainText("取件码");
+  await expect(page.locator(".detail")).not.toContainText("C-123456");
+  const commands = [];
+  page.on("request", (req) => {
+    if (req.url().endsWith(`/orders/${order.orderId}/status`))
+      commands.push(req.postDataJSON());
+  });
   await page.getByRole("button", { name: "开始取件", exact: true }).click();
-  await page.getByLabel("输入取件码").fill("C-123456");
-  await page.getByRole("button", { name: "核验取件码", exact: true }).click();
+  await page.getByRole("button", { name: "确认取件", exact: true }).click();
   await page.getByRole("button", { name: "确认送达", exact: true }).click();
-  await expect(page.getByLabel("评分")).toBeVisible({ timeout: 15000 });
-  await page.getByLabel("文字评价（可选）").fill("沟通顺畅");
-  await page.getByRole("button", { name: "提交评价" }).click();
-  await expect(page.getByText(/评价已提交/)).toBeVisible();
-  await visit(page, publisher, "/reviews");
+  await expect(page.locator(".detail")).toContainText("等待发布者确认收货");
+  await expect(page.getByLabel("评分")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "确认收货", exact: true }),
+  ).toHaveCount(0);
+  expect((await latest(request, order, courier)).status).toBe("delivered");
+  expect(commands.map((body) => body.action)).toEqual([
+    "start_pickup",
+    "confirm_pickup",
+    "confirm_delivery",
+  ]);
+  expect(commands.every((body) => !("code" in body))).toBe(true);
+  await visit(page, publisher);
   await open(page, order);
+  await page.getByRole("button", { name: "确认收货", exact: true }).click();
+  await expect(page.getByLabel("评分")).toBeVisible({ timeout: 15000 });
+  expect((await latest(request, order, publisher)).status).toBe("completed");
   await page.getByLabel("评分").selectOption("1");
   await page.getByLabel("文字评价（可选）").fill("<script>仅作为文字</script>");
   await page.getByRole("button", { name: "提交评价" }).click();
@@ -177,6 +194,9 @@ test("真实账号：大厅接单、履约、双向评价、信用刷新与低�
   await visit(page, courier, "/reviews");
   await expect(page.locator(".summary").first()).toContainText("限制接单");
   await open(page, order);
+  await page.getByLabel("文字评价（可选）").fill("沟通顺畅");
+  await page.getByRole("button", { name: "提交评价" }).click();
+  await expect(page.getByText(/评价已提交/)).toBeVisible();
   await expect(page.locator(".review")).toHaveCount(2);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
@@ -197,7 +217,7 @@ test("真实账号：大厅接单、履约、双向评价、信用刷新与低�
   await expect(page.getByRole("dialog")).toContainText("信用分低于");
 });
 
-test("390px 手机：错误三次锁单，双方可见通知且无横向溢出", async ({
+test("390px 手机：无需输入取件码，送达待收货且无横向溢出", async ({
   page,
   request,
 }) => {
@@ -212,18 +232,13 @@ test("390px 手机：错误三次锁单，双方可见通知且无横向溢出",
   await visit(page, courier);
   await open(page, order);
   await page.getByRole("button", { name: "开始取件", exact: true }).click();
-  for (let n = 1; n <= 3; n++) {
-    await page.getByLabel("输入取件码").fill("错误码");
-    await page.getByRole("button", { name: "核验取件码", exact: true }).click();
-    if (n < 3)
-      await expect(
-        page.getByText(`取件码已连续错误 ${n} 次，累计三次将锁定订单。`),
-      ).toBeVisible();
-  }
-  await expect(page.getByLabel("订单通知")).toContainText("订单已锁定");
-  await expect(
-    page.getByRole("button", { name: "核验取件码", exact: true }),
-  ).toHaveCount(0);
+  await expect(page.locator(".detail input")).toHaveCount(0);
+  await expect(page.locator(".detail")).not.toContainText("取件码");
+  await expect(page.locator(".detail")).not.toContainText("C-123456");
+  await page.getByRole("button", { name: "确认取件", exact: true }).click();
+  await page.getByRole("button", { name: "确认送达", exact: true }).click();
+  await expect(page.locator(".detail")).toContainText("等待发布者确认收货");
+  await expect(page.getByLabel("评分")).toHaveCount(0);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -231,12 +246,18 @@ test("390px 手机：错误三次锁单，双方可见通知且无横向溢出",
   ).toBe(true);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
-    path: "test-results/c-lock-mobile.png",
+    path: "test-results/c-receipt-mobile.png",
     fullPage: true,
   });
   await visit(page, publisher);
   await open(page, order);
-  await expect(page.getByLabel("订单通知")).toContainText("订单已锁定");
+  await expect(page.locator(".detail")).not.toContainText("取件码");
+  await page.getByRole("button", { name: "确认收货", exact: true }).click();
+  await expect(page.getByLabel("评分")).toBeVisible({ timeout: 15000 });
+  await expect(page.locator(".progress li").last()).toHaveAttribute(
+    "aria-current",
+    "step",
+  );
 });
 
 test("取消未支付和已支付订单，等待真实退款结果", async ({ page, request }) => {
@@ -285,7 +306,9 @@ test("连接失败保留重试且使用同一提交标识，详情失败禁用�
   await page.getByRole("button", { name: "开始取件", exact: true }).click();
   await expect(page.getByText(/连接中断/)).toBeVisible();
   await page.getByRole("button", { name: "开始取件", exact: true }).click();
-  await expect(page.getByLabel("输入取件码")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "确认取件", exact: true }),
+  ).toBeVisible();
   expect(keys).toHaveLength(2);
   expect(keys[0]).toBe(keys[1]);
   await page.route(`**/api/orders/${order.orderId}`, (route) =>
@@ -294,7 +317,7 @@ test("连接失败保留重试且使用同一提交标识，详情失败禁用�
   await page.getByRole("button", { name: "刷新订单" }).click();
   await expect(page.getByRole("alert")).toContainText("无法更新订单");
   await expect(
-    page.getByRole("button", { name: "核验取件码", exact: true }),
+    page.getByRole("button", { name: "确认取件", exact: true }),
   ).toBeDisabled();
 });
 

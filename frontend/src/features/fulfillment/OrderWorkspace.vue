@@ -17,15 +17,13 @@ const user = ref(null),
   total = ref(0),
   page = ref(1),
   role = ref("all");
-const status = ref(props.reviewOnly ? "delivered" : ""),
+const status = ref(props.reviewOnly ? "completed" : ""),
   loading = ref(false),
   listError = ref("");
 const selected = ref(null),
   detail = ref(null),
-  detailError = ref(""),
-  notifications = ref([]);
-const code = ref(""),
-  reason = ref(""),
+  detailError = ref("");
+const reason = ref(""),
   busy = ref(false),
   message = ref(""),
   revision = ref(0);
@@ -38,21 +36,26 @@ const steps = [
   "picking_up",
   "delivering",
   "delivered",
+  "completed",
 ];
-const next = computed(
-  () =>
-    ({
-      accepted: ["start_pickup", "开始取件"],
-      picking_up: ["confirm_pickup", "核验取件码"],
-      delivering: ["confirm_delivery", "确认送达"],
-    })[detail.value?.status],
-);
+const next = computed(() => {
+  if (
+    detail.value?.status === "delivered" &&
+    detail.value?.publisherUid === user.value?.uid
+  )
+    return ["confirm_receipt", "确认收货"];
+  if (detail.value?.courierUid !== user.value?.uid) return;
+  return {
+    accepted: ["start_pickup", "开始取件"],
+    picking_up: ["confirm_pickup", "确认取件"],
+    delivering: ["confirm_delivery", "确认送达"],
+  }[detail.value?.status];
+});
 const canCancel = computed(
   () =>
     detail.value?.publisherUid === user.value?.uid &&
     ["pending_payment", "pending"].includes(detail.value?.status) &&
-    detail.value?.paymentStatus !== "paying" &&
-    !detail.value?.locked,
+    detail.value?.paymentStatus !== "paying",
 );
 let alive = true,
   listGeneration = 0,
@@ -87,13 +90,9 @@ async function loadDetail(id = selected.value) {
   if (!id) return;
   const current = ++detailGeneration;
   try {
-    const [order, notices] = await Promise.all([
-      api.detail(id),
-      api.notifications(id),
-    ]);
+    const order = await api.detail(id);
     if (!alive || current !== detailGeneration || id !== selected.value) return;
     detail.value = order;
-    notifications.value = notices.items;
     detailError.value = "";
     revision.value++;
   } catch (e) {
@@ -104,14 +103,19 @@ async function loadDetail(id = selected.value) {
 function open(id) {
   selected.value = id;
   detail.value = null;
-  code.value = "";
   reason.value = "";
   message.value = "";
   detailError.value = "";
   loadDetail(id);
 }
 async function act(operation) {
-  if (!detail.value || busy.value || detailError.value) return;
+  if (
+    !detail.value ||
+    busy.value ||
+    detailError.value ||
+    (operation !== "cancel" && !next.value)
+  )
+    return;
   const id = detail.value.orderId;
   const body =
     operation === "cancel"
@@ -119,9 +123,6 @@ async function act(operation) {
       : {
           version: detail.value.version,
           action: next.value[0],
-          ...(next.value[0] === "confirm_pickup"
-            ? { code: code.value.trim() }
-            : {}),
         };
   const signature = JSON.stringify([id, operation, body]);
   if (!keys.has(signature)) keys.set(signature, crypto.randomUUID());
@@ -137,7 +138,6 @@ async function act(operation) {
       operation === "cancel"
         ? "订单已取消。已支付订单的退款结果将在此更新。"
         : "履约进度已更新。";
-    code.value = "";
   } catch (e) {
     message.value = e.status
       ? e.message
@@ -190,7 +190,7 @@ onBeforeUnmount(() => {
     v-if="!loggedIn"
     class="panel"
     title="登录后查看我的订单"
-    description="跟进履约进度，送达后互相评价。"
+    description="跟进履约进度，发布者确认收货后互相评价。"
     ><RouterLink class="primary-button" to="/login?redirect=/orders"
       >去登录</RouterLink
     ></EmptyState
@@ -297,8 +297,6 @@ onBeforeUnmount(() => {
           <dd>{{ detail.stationName }}</dd>
           <dt>送达地址</dt>
           <dd>{{ detail.address }}</dd>
-          <dt>取件码</dt>
-          <dd>{{ detail.code }}</dd>
           <dt>备注</dt>
           <dd>{{ detail.note || "无" }}</dd>
           <dt>订单金额</dt>
@@ -323,38 +321,15 @@ onBeforeUnmount(() => {
             }}
           </dd>
         </dl>
-        <p v-if="detail.locked" role="alert" class="error">
-          取件码连续错误三次，订单已锁定。请联系维护者处理。
+        <p v-if="detail.status === 'delivered'" role="status">
+          代取员已确认送达，等待发布者确认收货；确认后订单完成并开放评价。
         </p>
-        <p v-else-if="detail.pickupFailureCount" role="status">
-          取件码已连续错误
-          {{ detail.pickupFailureCount }} 次，累计三次将锁定订单。
-        </p>
-        <ul v-if="notifications.length" class="notices" aria-label="订单通知">
-          <li v-for="notice in notifications" :key="notice.notificationId">
-            {{ notice.message }}
-            <small>{{ formatTime(notice.createdAt) }}</small>
-          </li>
-        </ul>
         <p v-if="message" role="status">{{ message }}</p>
         <form
-          v-if="
-            next &&
-            detail.courierUid === user?.uid &&
-            !detail.locked &&
-            !reviewOnly
-          "
+          v-if="next && !reviewOnly"
           class="action-form"
           @submit.prevent="act('advance')"
         >
-          <label v-if="detail.status === 'picking_up'"
-            >输入取件码<input
-              v-model="code"
-              required
-              maxlength="50"
-              autocomplete="off"
-              :disabled="busy"
-          /></label>
           <button class="primary-button" :disabled="busy || !!detailError">
             {{ busy ? "处理中…" : next[1] }}
           </button>
@@ -387,7 +362,7 @@ onBeforeUnmount(() => {
           </button>
         </form>
         <OrderReviews
-          v-if="detail.status === 'delivered'"
+          v-if="detail.status === 'completed'"
           :key="detail.orderId"
           :order-id="detail.orderId"
           :uid="user?.uid"
@@ -535,11 +510,6 @@ dd {
 }
 .error {
   color: #a3342b;
-}
-.notices {
-  background: #fff4df;
-  border-radius: 10px;
-  padding: 16px 30px;
 }
 small {
   color: #66766a;

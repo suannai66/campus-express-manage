@@ -82,7 +82,7 @@ onBeforeUnmount(() => dialog.value?.close());
         </div>
       </dl>
       <p class="privacy-note">
-        取件码和详细地址在接单后提供。请先确认取件点与送达区域是否顺路。
+        详细地址在接单后提供。请先确认取件点与送达区域是否顺路。
       </p>
       <button
         class="primary-button close-action"

@@ -19,7 +19,7 @@ def on_order_completed(db, event):
                 "amount": order.amount, "baseFee": order.base_fee, "tip": order.tip,
                 "commissionRateBps": order.commission_bps, "pricingVersion": order.pricing_version,
                 "orderVersion": order.version}
-    if order.status != "delivered" or data["version"] != order.version or data["payload"] != expected:
+    if order.status != "completed" or data["version"] != order.version or data["payload"] != expected:
         fail(409, "ORDER_CONFLICT", "完结事件与订单事实不一致")
     fact_digest = fingerprint(expected)
     opening = db.get(ReviewOpening, order.id)

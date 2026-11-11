@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import func, select, update, delete
 import app.main as main
-from app.common import Idempotency, fail, iso, now
+from app.common import Idempotency, fail, fingerprint, iso, now
 from app.events.models import OutboxEvent, Delivery
 from app.events.service import Dispatcher
 from app.modules.finance.models import Account, Settlement, Refund
@@ -51,18 +51,21 @@ class FulfillmentTests(unittest.TestCase):
         self.dispatcher.dispatch_once()
         return self.latest(body)
 
-    def advance(self, order, action, **extra):
-        return self.post(order, "status", {"version": order["version"], "action": action, **extra})
+    def advance(self, order, action, uid="bob", key=None, **extra):
+        return self.post(order, "status", {"version": order["version"], "action": action, **extra}, uid, key)
 
     def pickup(self):
         order = self.paid()
         order = self.post(order, "accept").json()
         return self.advance(order, "start_pickup").json()
 
-    def delivered(self, dispatch=True):
+    def delivered(self):
         order = self.pickup()
-        order = self.advance(order, "confirm_pickup", code=self.f.body["code"]).json()
-        order = self.advance(order, "confirm_delivery").json()
+        order = self.advance(order, "confirm_pickup").json()
+        return self.advance(order, "confirm_delivery").json()
+
+    def completed(self, dispatch=True):
+        order = self.advance(self.delivered(), "confirm_receipt", uid="alice").json()
         if dispatch:
             self.dispatcher.dispatch_once()
         return order
@@ -72,16 +75,16 @@ class FulfillmentTests(unittest.TestCase):
             return db.scalar(select(func.count()).select_from(model))
 
     def test_real_lifecycle_settlement_opening_logs_and_event_privacy(self):
-        order = self.delivered()
-        self.assertEqual(order["status"], "delivered")
-        self.assertEqual(self.count(OperationLog), 4)
+        order = self.completed()
+        self.assertEqual(order["status"], "completed")
+        self.assertEqual(self.count(OperationLog), 5)
         self.assertEqual(self.count(ReviewOpening), 1)
         self.assertEqual(self.count(Settlement), 1)
         self.assertEqual(self.helper.balances(), (465, 0))
         with self.f.sessions() as db:
             self.assertEqual(db.get(Account, "bob").available_cent, 505)
             events = list(db.scalars(select(OutboxEvent).where(OutboxEvent.type.like("order.%"))))
-            self.assertEqual(len(events), 5)
+            self.assertEqual(len(events), 6)
             serialized = json.dumps([e.body for e in events])
             for private in (self.f.body["code"], self.f.body["address"], "token", "phone"):
                 self.assertNotIn(private, serialized)
@@ -98,8 +101,10 @@ class FulfillmentTests(unittest.TestCase):
             self.assertEqual(self.post(order, "accept", body).status_code, 422)
         accepted = self.post(order, "accept").json()
         self.assertEqual(self.advance(accepted, "confirm_delivery").status_code, 409)
+        self.assertEqual(self.advance(accepted, "confirm_receipt", uid="alice").status_code, 409)
+        self.assertEqual(self.advance(accepted, "start_pickup", uid="alice").status_code, 403)
         self.assertEqual(self.post(accepted, "status", {"version": accepted["version"], "action": "start_pickup"}, uid="carol").status_code, 403)
-        for body in ({"action": "start_pickup", "code": None}, {"action": "start_pickup", "code": "x"}, {"action": "confirm_pickup"}, {"action": "skip"}):
+        for body in ({"action": "start_pickup", "code": None}, {"action": "start_pickup", "code": "x"}, {"action": "confirm_pickup", "code": "x"}, {"action": "skip"}):
             self.assertEqual(self.post(accepted, "status", {"version": accepted["version"], **body}).status_code, 422)
         for endpoint in ("status", "reviews", "notifications"):
             self.assertEqual(self.f.get(f"/api/orders/{order['orderId']}/{endpoint}", "carol").status_code, 404)
@@ -119,35 +124,93 @@ class FulfillmentTests(unittest.TestCase):
         self.assertEqual(changed.json()["code"], "IDEMPOTENCY_CONFLICT")
         self.assertEqual(self.count(OperationLog), 2)
 
-    def test_three_mismatches_persist_replay_lock_and_notify_both(self):
+    def test_pickup_requires_no_code_and_replays_without_old_locking(self):
         order = self.pickup()
-        first_body = {"version": order["version"], "action": "confirm_pickup", "code": "wrong"}
         key = str(uuid4())
-        first = self.post(order, "status", first_body, key=key)
-        self.assertEqual((first.status_code, first.json()["fields"]["pickupFailureCount"]), (422, 1))
-        for n in (2, 3):
-            order = self.latest(order)
-            result = self.advance(order, "confirm_pickup", code="wrong")
-            self.assertEqual(result.status_code, 422 if n == 2 else 409)
-            self.assertEqual(result.json()["fields"]["pickupFailureCount"], n)
-        self.assertEqual(self.post(order, "status", first_body, key=key).json(), first.json())
-        latest = self.latest(order)
-        self.assertTrue(latest["locked"])
-        self.assertEqual(latest["pickupFailureCount"], 3)
-        self.assertEqual(self.advance(latest, "confirm_pickup", code=self.f.body["code"]).json()["code"], "ORDER_LOCKED")
-        for uid in ("alice", "bob"):
-            notices = self.f.get(f"/api/orders/{order['orderId']}/notifications", uid).json()
-            self.assertEqual(notices["total"], 1)
-            self.assertNotIn("wrong", notices["items"][0]["message"])
-        self.assertEqual(self.count(Notification), 2)
-
-    def test_correct_code_resets_failures(self):
-        order = self.pickup()
-        self.advance(order, "confirm_pickup", code="wrong")
-        order = self.latest(order)
-        result = self.advance(order, "confirm_pickup", code="  " + self.f.body["code"] + "  ")
-        self.assertEqual((result.json()["status"], result.json()["pickupFailureCount"]), ("delivering", 0))
+        first = self.advance(order, "confirm_pickup", key=key)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["status"], "delivering")
+        self.assertEqual(self.advance(order, "confirm_pickup", key=key).json(), first.json())
+        for field in ("code", "pickupFailureCount", "locked"):
+            self.assertNotIn(field, first.json())
+        self.assertEqual(self.count(OperationLog), 3)
         self.assertEqual(self.count(Notification), 0)
+
+    def test_legacy_accept_success_replay_hides_fields_without_rewriting_receipt(self):
+        order = self.paid()
+        key = str(uuid4())
+        first = self.post(order, "accept", key=key).json()
+        with self.f.sessions.begin() as db:
+            row = db.scalar(select(Idempotency).where(Idempotency.key == key))
+            original = {**row.result, "body": {**row.result["body"], "code": "legacy-code",
+                "locked": True, "pickupFailureCount": 3}}
+            row.result = original
+        self.assertEqual(self.post(order, "accept", key=key).json(), first)
+        self.assertEqual(self.count(OperationLog), 1)
+        with self.f.sessions() as db:
+            self.assertEqual(db.scalar(select(Idempotency).where(Idempotency.key == key)).result, original)
+
+    def test_legacy_null_code_digest_replays_and_still_rejects_new_code_and_conflicts(self):
+        order = self.post(self.paid(), "accept").json()
+        key = str(uuid4())
+        body = {"action": "start_pickup", "version": order["version"]}
+        first = self.post(order, "status", body, key=key).json()
+        old_digest = fingerprint({**body, "code": None})
+        with self.f.sessions.begin() as db:
+            row = db.scalar(select(Idempotency).where(Idempotency.key == key))
+            row.digest = old_digest
+            row.result = {**row.result, "body": {**row.result["body"], "code": "legacy-code",
+                "locked": False, "pickupFailureCount": 0}}
+        self.assertEqual(self.post(order, "status", body, key=key).json(), first)
+        self.assertEqual(self.post(order, "status", {**body, "code": None}, key=key).status_code, 422)
+        conflict = self.post(order, "status", {**body, "version": body["version"] + 1}, key=key)
+        self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_CONFLICT")
+        self.assertEqual(self.count(OperationLog), 2)
+        with self.f.sessions() as db:
+            self.assertEqual(db.scalar(select(Idempotency).where(Idempotency.key == key)).digest, old_digest)
+
+    def test_legacy_code_error_cannot_be_replayed_as_success_without_code(self):
+        order = self.pickup()
+        key = str(uuid4())
+        body = {"action": "confirm_pickup", "version": order["version"]}
+        original = {"statusCode": 422, "body": {"code": "PICKUP_CODE_MISMATCH",
+            "detail": "旧版取件码错误", "fields": {"pickupFailureCount": 1, "locked": False}}}
+        with self.f.sessions.begin() as db:
+            db.add(Idempotency(uid="bob", operation=f"fulfillment:status:{order['orderId']}", key=key,
+                digest=fingerprint({**body, "code": "wrong-code"}), result=original))
+        response = self.post(order, "status", body, key=key)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "IDEMPOTENCY_CONFLICT")
+        self.assertEqual(self.count(OperationLog), 2)
+        with self.f.sessions.begin() as db:
+            row = db.scalar(select(Idempotency).where(Idempotency.key == key))
+            row.digest = fingerprint({**body, "code": None})
+        response = self.post(order, "status", body, key=key)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json(), original["body"])
+        self.assertEqual(self.count(OperationLog), 2)
+
+    def test_delivery_waits_for_publisher_receipt_before_settlement_and_reviews(self):
+        order = self.delivered()
+        self.assertEqual(order["status"], "delivered")
+        self.dispatcher.dispatch_once()
+        self.assertEqual(self.count(Settlement), 0)
+        self.assertEqual(self.count(ReviewOpening), 0)
+        self.assertEqual(self.helper.balances(), (465, 535))
+        self.assertFalse(self.f.get(f"/api/orders/{order['orderId']}/reviews").json()["reviewable"])
+        self.assertEqual(self.post(order, "reviews", {"rating": 5}, "alice").status_code, 409)
+        self.assertEqual(self.advance(order, "confirm_receipt").status_code, 403)
+        self.assertEqual(self.advance(order, "confirm_receipt", uid="carol").status_code, 403)
+        key = str(uuid4())
+        completed = self.advance(order, "confirm_receipt", uid="alice", key=key)
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["status"], "completed")
+        self.assertEqual(self.advance(order, "confirm_receipt", uid="alice", key=key).json(), completed.json())
+        self.assertEqual(self.advance(completed.json(), "confirm_receipt", uid="alice").status_code, 409)
+        self.dispatcher.dispatch_once()
+        self.assertEqual(self.count(Settlement), 1)
+        self.assertEqual(self.count(ReviewOpening), 1)
+        self.assertEqual(self.f.get("/api/orders?scope=mine&status=completed").json()["total"], 1)
 
     def test_two_couriers_compete_and_only_one_owns_order(self):
         for _ in range(5):
@@ -198,24 +261,38 @@ class FulfillmentTests(unittest.TestCase):
         self.assertEqual(self.count(Idempotency), before)
         self.assertEqual(self.post(order, "accept").status_code, 200)
 
-    def test_notification_failure_rolls_back_third_failure(self):
-        order = self.pickup()
-        for _ in range(2):
-            self.advance(order, "confirm_pickup", code="wrong"); order = self.latest(order)
-        from sqlalchemy.orm import Session
-        original = Session.add
-        def add(db, instance, *args, **kwargs):
-            if isinstance(instance, Notification): raise RuntimeError("injected notification failure")
-            return original(db, instance, *args, **kwargs)
-        with patch.object(Session, "add", add):
-            with self.assertRaises(RuntimeError): self.advance(order, "confirm_pickup", code="wrong")
-        self.assertEqual(self.latest(order)["pickupFailureCount"], 2)
-        self.assertFalse(self.latest(order)["locked"])
-        self.assertEqual(self.count(Notification), 0)
+    def test_receipt_publish_failure_rolls_back_completion_and_retry(self):
+        order = self.delivered()
+        key = str(uuid4())
+        before = self.count(Idempotency)
+        from app.events import publish as original_publish
+        def publish_until_completion(db, event):
+            if event["type"] == "order.completed":
+                raise RuntimeError("injected completion failure")
+            return original_publish(db, event)
+        with patch("app.modules.fulfillment.service.publish", side_effect=publish_until_completion):
+            with self.assertRaises(RuntimeError):
+                self.advance(order, "confirm_receipt", uid="alice", key=key)
+        self.assertEqual(self.latest(order)["status"], "delivered")
         self.assertEqual(self.count(OperationLog), 4)
+        self.assertEqual(self.count(Idempotency), before)
+        self.assertEqual(self.count(ReviewOpening), 0)
+        self.assertEqual(self.count(Settlement), 0)
+        self.assertEqual(self.advance(order, "confirm_receipt", uid="alice", key=key).status_code, 200)
+
+    def test_receipt_rejects_stale_version_and_concurrent_completion_once(self):
+        order = self.delivered()
+        self.assertEqual(self.post(order, "status", {"version": order["version"] - 1, "action": "confirm_receipt"}, "alice").status_code, 409)
+        with ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(lambda _: self.advance(order, "confirm_receipt", uid="alice"), range(2)))
+        self.assertEqual(sorted(r.status_code for r in results), [200, 409])
+        self.dispatcher.dispatch_once()
+        self.assertEqual(self.count(OperationLog), 5)
+        self.assertEqual(self.count(ReviewOpening), 1)
+        self.assertEqual(self.count(Settlement), 1)
 
     def test_review_waits_for_event_and_both_sides_submit_immutable_once(self):
-        order = self.delivered(dispatch=False)
+        order = self.completed(dispatch=False)
         body = {"rating": 5, "tags": [" 准时 "], "comment": "<script>plain text</script>"}
         self.assertEqual(self.post(order, "reviews", body, "alice").status_code, 409)
         self.dispatcher.dispatch_once()
@@ -231,7 +308,7 @@ class FulfillmentTests(unittest.TestCase):
         self.assertEqual(self.f.client.patch(f"/api/orders/{order['orderId']}/reviews", json=body, headers=self.f.headers()).status_code, 405)
 
     def test_review_validation_and_concurrent_double_click(self):
-        order = self.delivered()
+        order = self.completed()
         for body in ({"rating": True}, {"rating": "5"}, {"rating": 1.5}, {"rating": 0}, {"rating": 6},
                      {"rating": 5, "tags": ["a"] * 6}, {"rating": 5, "tags": [" "]}, {"rating": 5, "tags": ["a" * 21]},
                      {"rating": 5, "comment": "a" * 501}, {"rating": 5, "revieweeUid": "alice"}):
@@ -242,7 +319,7 @@ class FulfillmentTests(unittest.TestCase):
         self.assertEqual(self.count(Review), 1)
 
     def test_completion_consumer_replay_conflict_rollback_and_retry(self):
-        order = self.delivered(dispatch=False)
+        order = self.completed(dispatch=False)
         with self.f.sessions() as db:
             event = db.scalar(select(OutboxEvent).where(OutboxEvent.type == "order.completed")).body
             on_order_completed(db, event)
@@ -296,7 +373,7 @@ class FulfillmentTests(unittest.TestCase):
         with self.f.sessions.begin() as db: self.seed_review(db, 1)
         another = self.paid()
         self.assertEqual(self.post(another, "accept").json()["code"], "CREDIT_TOO_LOW")
-        self.assertEqual(self.advance(order, "confirm_pickup", code=self.f.body["code"]).status_code, 200)
+        self.assertEqual(self.advance(order, "confirm_pickup").status_code, 200)
 
 
 if __name__ == "__main__":

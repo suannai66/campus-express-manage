@@ -45,6 +45,7 @@ class TradeAuditTests(unittest.TestCase):
                 order = OrderGateway.transition(db, order, order.version, "accept", "bob", status="accepted", courier_uid="bob")
                 for state in ("picking_up", "delivering", "delivered"):
                     order = OrderGateway.transition(db, order, order.version, "fulfill", "bob", status=state)
+                order = OrderGateway.transition(db, order, order.version, "confirm_receipt", "alice", status="completed")
                 payload = {"publisherUid": "alice", "courierUid": "bob", "amount": order.amount,
                            "baseFee": order.base_fee, "tip": order.tip, "commissionRateBps": order.commission_bps,
                            "pricingVersion": order.pricing_version, "orderVersion": order.version}

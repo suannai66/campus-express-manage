@@ -20,7 +20,7 @@ SUBSCRIPTIONS = {
 Identifier = Annotated[str, Field(min_length=1, max_length=100)]
 Positive = Annotated[int, Field(strict=True, gt=0)]
 Nonnegative = Annotated[int, Field(strict=True, ge=0)]
-Status = Literal["pending_payment", "pending", "accepted", "picking_up", "delivering", "delivered", "cancelled"]
+Status = Literal["pending_payment", "pending", "accepted", "picking_up", "delivering", "delivered", "completed", "cancelled"]
 
 
 class Envelope(Input):

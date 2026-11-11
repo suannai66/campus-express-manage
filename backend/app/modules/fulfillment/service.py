@@ -1,14 +1,14 @@
-"""履约用例：状态、日志、通知、请求幂等与 outbox 使用同一事务。"""
-import hmac
+"""履约用例：状态、日志、请求幂等与 outbox 使用同一事务。"""
 from uuid import uuid4
+from sqlalchemy import select
 
-from ...common import fail, iso, now, remember, replay
+from ...common import Idempotency, fail, fingerprint, iso, now, remember
 from ...events import publish
 from ..identity.dependencies import require_verified
-from ..orders.api import detail_view
+from ..orders.api import summary
 from ..orders.gateway import OrderGateway
 from .credit import CreditService
-from .models import Notification, OperationLog
+from .models import OperationLog
 
 
 def emit(db, order, kind, payload):
@@ -25,12 +25,41 @@ def record(db, before, after, uid, action, reason=None):
                                              "courierUid": after.courier_uid})
 
 
+def fulfillment_detail(order, uid):
+    """履约动作无需取件码，也不向 C 页面返回该字段。"""
+    result = {**summary(order), "publisherUid": order.publisher_uid,
+              "courierUid": order.courier_uid, "address": order.address}
+    if uid == order.publisher_uid:
+        result["paymentRequestId"] = order.payment_request_id
+    return result
+
+
+def replay_fulfillment(db, uid, operation, key, payload):
+    """只兼容旧版缺省 code:null 的摘要；不改写旧回执或重做业务。"""
+    row = db.scalar(select(Idempotency).where(Idempotency.uid == uid,
+                    Idempotency.operation == operation, Idempotency.key == key))
+    if row is None:
+        return None
+    digests = {fingerprint(payload)}
+    if payload.get("action") in {"start_pickup", "confirm_pickup", "confirm_delivery"}:
+        digests.add(fingerprint({**payload, "code": None}))
+    if row.digest not in digests:
+        fail(409, "IDEMPOTENCY_CONFLICT", "相同提交标识不能用于不同内容")
+    result = row.result
+    if result["statusCode"] == 200:
+        # 历史成功快照仍可重放，但 C 响应不再暴露取件码及旧锁定字段。
+        result = {**result, "body": {name: value for name, value in result["body"].items()
+                  if name not in {"code", "locked", "pickupFailureCount"}}}
+    return result
+
+
 def execute(db, user, order_id, operation, body, key):
     name = f"fulfillment:{operation}:{order_id}"
     payload = body.model_dump()
-    if operation != "cancel":
+    receipt = operation == "status" and body.action == "confirm_receipt"
+    if operation != "cancel" and not receipt:
         require_verified(user)
-    previous = replay(db, user.uid, name, key, payload)
+    previous = replay_fulfillment(db, user.uid, name, key, payload)
     if previous:
         return previous
     before = OrderGateway.get_snapshot(db, order_id)
@@ -42,18 +71,19 @@ def execute(db, user, order_id, operation, body, key):
     elif operation == "cancel":
         if user.uid != before.publisher_uid:
             fail(403, "FORBIDDEN", "仅发布者可取消订单")
+    elif receipt:
+        if user.uid != before.publisher_uid:
+            fail(403, "FORBIDDEN", "仅发布者可确认收货")
     elif user.uid != before.courier_uid:
         fail(403, "FORBIDDEN", "仅本单取件员可推进履约")
     if before.version != body.version:
         fail(409, "ORDER_CONFLICT", "订单版本已变化，请刷新后重试")
-    if before.locked:
-        fail(409, "ORDER_LOCKED", "订单已锁定，请联系维护者处理")
     status_code = 200
     if operation == "accept":
         after = OrderGateway.transition(db, before, body.version, "accept", user.uid,
                                         status="accepted", courier_uid=user.uid)
         record(db, before, after, user.uid, "accept")
-        result = detail_view(after, user.uid)
+        result = fulfillment_detail(after, user.uid)
     elif operation == "cancel":
         after = OrderGateway.transition(db, before, body.version, "cancel", user.uid,
                                         status="cancelled", refund_status="processing" if before.payment_status == "paid" else "none")
@@ -64,35 +94,18 @@ def execute(db, user, order_id, operation, body, key):
     else:
         source, target = {"start_pickup": ("accepted", "picking_up"),
                           "confirm_pickup": ("picking_up", "delivering"),
-                          "confirm_delivery": ("delivering", "delivered")}[body.action]
+                          "confirm_delivery": ("delivering", "delivered"),
+                          "confirm_receipt": ("delivered", "completed")}[body.action]
         if before.status != source:
-            fail(409, "ORDER_CONFLICT", "请按取件、配送、送达的顺序操作")
-        wrong_code = body.action == "confirm_pickup" and not hmac.compare_digest(body.code.encode(), before.code.encode())
-        if wrong_code:
-            failures = before.pickup_failures + 1
-            locked = failures >= 3
-            after = OrderGateway.transition(db, before, body.version, "fulfill", user.uid,
-                pickup_failures=failures, locked=locked, lock_reason="取件码连续错误三次" if locked else None)
-            record(db, before, after, user.uid, "pickup_code_mismatch")
-            if locked:
-                for uid in {after.publisher_uid, after.courier_uid}:
-                    db.add(Notification(id=str(uuid4()), order_id=after.id, uid=uid, type="pickup_locked",
-                        message="取件码连续错误三次，订单已锁定，请联系维护者处理。", created_at=iso(now())))
-            status_code = 409 if locked else 422
-            result = {"detail": "取件码连续错误三次，订单已锁定" if locked else "取件码不正确，请核对后重试",
-                      "code": "ORDER_LOCKED" if locked else "PICKUP_CODE_MISMATCH",
-                      "fields": {"pickupFailureCount": failures, "version": after.version, "locked": locked}}
-        else:
-            changes = {"status": target}
-            if body.action == "confirm_pickup":
-                changes["pickup_failures"] = 0
-            after = OrderGateway.transition(db, before, body.version, "fulfill", user.uid, **changes)
-            record(db, before, after, user.uid, body.action)
-            if target == "delivered":
-                emit(db, after, "order.completed", {"publisherUid": after.publisher_uid, "courierUid": after.courier_uid,
-                    "amount": after.amount, "baseFee": after.base_fee, "tip": after.tip,
-                    "commissionRateBps": after.commission_bps, "pricingVersion": after.pricing_version})
-            result = detail_view(after, user.uid)
+            fail(409, "ORDER_CONFLICT", "请按取件、配送、送达、确认收货的顺序操作")
+        after = OrderGateway.transition(db, before, body.version, "confirm_receipt" if receipt else "fulfill",
+                                       user.uid, status=target)
+        record(db, before, after, user.uid, body.action)
+        if target == "completed":
+            emit(db, after, "order.completed", {"publisherUid": after.publisher_uid, "courierUid": after.courier_uid,
+                "amount": after.amount, "baseFee": after.base_fee, "tip": after.tip,
+                "commissionRateBps": after.commission_bps, "pricingVersion": after.pricing_version})
+        result = fulfillment_detail(after, user.uid)
     stored = {"statusCode": status_code, "body": result}
     remember(db, user.uid, name, key, payload, stored)
     db.commit()

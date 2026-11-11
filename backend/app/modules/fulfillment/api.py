@@ -44,7 +44,7 @@ def cancel(order_id: str, body: CancelInput, idempotency_key: Key,
 def status(order_id: str, user=Depends(current_identity), db: Session = Depends(get_db)):
     order = OrderGateway.related(db, order_id, user.uid)
     return {"orderId": order.id, "status": order.status, "paymentStatus": order.payment_status,
-            "refundStatus": order.refund_status, "locked": order.locked, "version": order.version}
+            "refundStatus": order.refund_status, "version": order.version}
 
 
 def pagination(request):
@@ -83,8 +83,8 @@ def credit(uid: str, user=Depends(current_identity), db: Session = Depends(get_d
 @router.post("/orders/{order_id}/reviews", status_code=201)
 def review(order_id: str, body: ReviewInput, user=Depends(current_identity), db: Session = Depends(get_db)):
     order = OrderGateway.related(db, order_id, user.uid)
-    if order.status != "delivered" or not db.get(ReviewOpening, order_id):
-        fail(409, "ORDER_CONFLICT", "订单尚未送达或评价入口准备中，请稍后刷新")
+    if order.status != "completed" or not db.get(ReviewOpening, order_id):
+        fail(409, "ORDER_CONFLICT", "订单尚未确认收货或评价入口准备中，请稍后刷新")
     publisher = user.uid == order.publisher_uid
     target = order.courier_uid if publisher else order.publisher_uid
     if not target or target == user.uid:
@@ -109,5 +109,5 @@ def reviews(order_id: str, request: Request, page: int = Query(1, ge=1), pageSiz
         lambda row: {"reviewId": row.id, "orderId": row.order_id, "reviewerUid": row.reviewer_uid,
                      "revieweeUid": row.reviewee_uid, "reviewerRole": row.reviewer_role,
                      "rating": row.rating, "tags": row.tags, "comment": row.comment, "createdAt": row.created_at})
-    result["reviewable"] = order.status == "delivered" and db.get(ReviewOpening, order_id) is not None
+    result["reviewable"] = order.status == "completed" and db.get(ReviewOpening, order_id) is not None
     return result

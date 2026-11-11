@@ -10,7 +10,7 @@ from ..core.fee_util import split_settlement
 
 def settle_order(db, command):
     order = OrderGateway.get_snapshot(db, command.order_id)
-    if (order.status != "delivered" or order.payment_status != "paid" or order.refund_status != "none"
+    if (order.status != "completed" or order.payment_status != "paid" or order.refund_status != "none"
             or not order.courier_uid or order.publisher_uid == order.courier_uid
             or (command.publisher_uid, command.courier_uid, command.amount_cent,
                 command.base_fee_cent, command.commission_rate_bps) !=

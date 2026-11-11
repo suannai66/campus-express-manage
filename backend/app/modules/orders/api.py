@@ -16,7 +16,7 @@ from .entities import Order
 from .gateway import OrderGateway
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
-STATUSES = {"pending_payment", "pending", "accepted", "picking_up", "delivering", "delivered", "cancelled"}
+STATUSES = {"pending_payment", "pending", "accepted", "picking_up", "delivering", "delivered", "completed", "cancelled"}
 
 
 def validate_delivery_time(body):

@@ -74,7 +74,7 @@ onBeforeUnmount(() => {
       评价已提交，不可修改。等待彼此的下一次信任。
     </p>
     <p v-else-if="loaded && !reviewable">
-      送达结果确认中，评价入口将自动更新。
+      完成结果确认中，评价入口将自动更新。
     </p>
     <form v-else-if="loaded" @submit.prevent="submit">
       <label

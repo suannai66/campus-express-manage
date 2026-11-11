@@ -14,7 +14,6 @@ export const fulfillmentApi = {
   detail: (id) => request(path(id)),
   advance: (id, body, key) => post(`${path(id)}/status`, body, key),
   cancel: (id, body, key) => post(`${path(id)}/cancel`, body, key),
-  notifications: (id) => request(`${path(id)}/notifications`),
   reviews: (id) => request(`${path(id)}/reviews`),
   review: (id, body) => post(`${path(id)}/reviews`, body),
   credit: (uid) => request(`/users/${encodeURIComponent(uid)}/credit`),
@@ -25,7 +24,8 @@ export const statusLabels = {
   accepted: "已接单",
   picking_up: "取件中",
   delivering: "配送中",
-  delivered: "已送达",
+  delivered: "已送达，待收货",
+  completed: "已完成",
   cancelled: "已取消",
 };
 export const money = (value) => `¥${(value / 100).toFixed(2)}`;

@@ -79,11 +79,11 @@ B 消费后更新 refundStatus，原 paymentStatus 保留 paid。历史 pending 
 此前尚未升级 frozen_cent 的库仍须先执行上文冻结字段升级命令。
 现有余额、订单、认证、流水均保留。不新增匿名退款 HTTP 接口。
 
-## 配送完成结算
+## 发布者确认收货后的完成结算
 
 A 在公共事件组件中注册 `order.completed` → consumer_name=`finance` →
 `app.modules.finance.services.event_handlers.on_order_completed(db, event)`。
-消费者使用投递方 Session，不自行提交。校验已送达订单、付款人、取件员、
+消费者使用投递方 Session，不自行提交。校验发布者已确认收货的 completed 订单、付款人、取件员、
 成功支付事实、金额、基础费、小费与费率版本；不得从事件覆盖订单快照。
 
 平台佣金 = 订单 base_fee × 订单 commission_bps // 10000；
@@ -96,8 +96,7 @@ finance_settlements 独立保存客户冻结消耗、取件员收入、平台佣
 同订单、同支付各最多一笔结算，换 eventId 仍返回原结算；同 eventId 不同内容返回冲突。
 资金更新、取件员流水、结算审计、消费回执必须同事务提交或回滚。
 没有新增 settlement.succeeded 事件（团队契约未定义），也不直接修改 C/B 的订单状态。
-公共投递器已注册此消费者；C 交付实际完结业务入口并同事务发布 order.completed 后即可投递。
-C 自己的评价订阅尚未装配时单独保留重试，不影响已成功的资金结算。
+公共投递器已注册此消费者；C 的发布者 confirm_receipt 入口将 delivered 改为 completed 并同事务发布 order.completed。取件员 confirm_delivery 只改为 delivered，不触发结算，资金保持冻结。C 的评价订阅独立投递、失败独立重试，不影响已成功的资金结算。
 
 本轮只新增 finance_settlements 表。停止应用、备份共享库后，从 backend 执行
 `..\.venv\Scripts\python.exe scripts/init_db.py` 即可无损创建新表；
@@ -116,4 +115,4 @@ C 自己的评价订阅尚未装配时单独保留重试，不影响已成功的
   检查原有行保留，并验证升级后可正常支付和退款。
 
 资金专项测试验证本地资金及消费者事务；公共事件联调另见 tests/test_events.py、
-tests/test_events_integration.py。C 的生产业务入口仍待其交付，不能将测试内的网关动作算作已交付接口。
+tests/test_events_integration.py。C 的生产业务入口已接入确认收货流程，联调应验证 delivered 不结算、completed 才结算；不能将测试内网关动作等同于完整的客户端操作。

@@ -96,7 +96,8 @@ const statusLabels = {
   accepted: "已接单",
   picking_up: "取件中",
   delivering: "配送中",
-  delivered: "已送达",
+  delivered: "已送达，待确认收货",
+  completed: "已完成",
   cancelled: "已取消",
 };
 const statusText = computed(() =>
@@ -570,7 +571,7 @@ onBeforeUnmount(() => {
         <ShieldCheck :size="21" />
         <h3>把托付说清楚</h3>
         <p>
-          取件码与详细地址仅向你和接单后的同学提供。请在备注中避免填写敏感信息。
+          详细地址仅向你和接单后的同学提供。请在备注中避免填写敏感信息。
         </p>
       </section>
       <section v-if="recent.length" class="recent-orders">

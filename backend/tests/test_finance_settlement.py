@@ -33,6 +33,7 @@ class SettlementTests(unittest.TestCase):
             order = OrderGateway.transition(db, order, order.version, "accept", "bob", status="accepted", courier_uid="bob")
             for status in ("picking_up", "delivering", "delivered"):
                 order = OrderGateway.transition(db, order, order.version, "fulfill", "bob", status=status)
+            order = OrderGateway.transition(db, order, order.version, "confirm_receipt", "alice", status="completed")
         return {"eventId": str(uuid4()), "type": "order.completed", "occurredAt": iso(now()),
                 "orderId": order.id, "aggregateType": "order", "aggregateId": order.id,
                 "version": order.version,

@@ -40,7 +40,7 @@ onBeforeUnmount(() => {
 <template>
   <PageHeading
     title="认真对待，每一份信任"
-    subtitle="订单送达后可进行评价，信用让校园互助更安心。"
+    subtitle="发布者确认收货后可进行评价，信用让校园互助更安心。"
     eyebrow="REVIEWS & CREDIT"
   />
   <div class="summary-grid">

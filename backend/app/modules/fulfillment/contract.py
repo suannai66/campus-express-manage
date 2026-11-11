@@ -1,22 +1,12 @@
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints
 
 from ...common import Input, VersionInput
 
 
 class StatusInput(VersionInput):
-    action: Literal["start_pickup", "confirm_pickup", "confirm_delivery"]
-    code: str | None = Field(default=None, min_length=1, max_length=50)
-
-    @model_validator(mode="after")
-    def check_code(self):
-        if self.action == "confirm_pickup":
-            if self.code is None:
-                raise ValueError("确认取件必须填写取件码")
-        elif "code" in self.model_fields_set:
-            raise ValueError("此操作不允许提交取件码")
-        return self
+    action: Literal["start_pickup", "confirm_pickup", "confirm_delivery", "confirm_receipt"]
 
 
 class CancelInput(VersionInput):

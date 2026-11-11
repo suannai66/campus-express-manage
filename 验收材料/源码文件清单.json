@@ -1,0 +1,298 @@
+{
+  "headCommit": "51b14f724ff115433c0ca6000aed8d645db307df",
+  "branch": "feature/C",
+  "snapshotKind": "working-tree",
+  "generatedAt": "2026-11-11T23:10:10+08:00",
+  "diffBaseCommit": "506db077d599a4578a71bec22126d70e66727f56",
+  "sourceFileCount": 35,
+  "testMethodDefinitions": {
+    "backend/tests/test_events_integration.py": 11,
+    "backend/tests/test_fulfillment.py": 19,
+    "backend/tests/test_receipt_migration.py": 5,
+    "backend/tests/test_finance_settlement.py": 9,
+    "backend/tests/test_finance_trade_audit.py": 5
+  },
+  "note": "源码从当前工作区读取，包含未提交修订，不是 HEAD 提交快照；SHA-256 对应文件原始字节。完整公共代码不全属于 C 新增。生成材料不执行测试。",
+  "files": [
+    {
+      "id": "source-1",
+      "path": "backend/app/modules/fulfillment/__init__.py",
+      "role": "Python 包入口与模块说明",
+      "group": "12. C 部分完整业务源码",
+      "lines": 1,
+      "sha256": "953fa47d61d47ab6e1302190348edcfe8eaf7f450093592e49b2235d88546347"
+    },
+    {
+      "id": "source-2",
+      "path": "backend/app/modules/fulfillment/contract.py",
+      "role": "请求字段、类型和条件校验",
+      "group": "12. C 部分完整业务源码",
+      "lines": 22,
+      "sha256": "466d2d6bae1c6a06b7998b27ec634e5d58e443952378a51a2bbc08067ee953d3"
+    },
+    {
+      "id": "source-3",
+      "path": "backend/app/modules/fulfillment/models.py",
+      "role": "C 的五张业务表与唯一约束",
+      "group": "12. C 部分完整业务源码",
+      "lines": 61,
+      "sha256": "c59f1cf4c1d545254d73f8bdbd099ec480749511907c8afef014f92cbfa6894e"
+    },
+    {
+      "id": "source-4",
+      "path": "backend/app/modules/fulfillment/api.py",
+      "role": "HTTP 路由、查询权限、分页和评价提交",
+      "group": "12. C 部分完整业务源码",
+      "lines": 113,
+      "sha256": "cfc5cdc4035b987556649ba48b44a39084a1f6216901d2a530ae707c78e43c3d"
+    },
+    {
+      "id": "source-5",
+      "path": "backend/app/modules/fulfillment/service.py",
+      "role": "接单、履约、取消及同事务日志事件",
+      "group": "12. C 部分完整业务源码",
+      "lines": 112,
+      "sha256": "4a860539b0c08967c46356e5b79cdc021918d4d23ea53621a0b8c804e817c47f"
+    },
+    {
+      "id": "source-6",
+      "path": "backend/app/modules/fulfillment/handlers.py",
+      "role": "完结事件校验、去重和评价开放",
+      "group": "12. C 部分完整业务源码",
+      "lines": 33,
+      "sha256": "cffe57cb394a1ef0a43cdb9e6b00655440e1b5978c176101d5d6bf54ff6b6289"
+    },
+    {
+      "id": "source-7",
+      "path": "backend/app/modules/fulfillment/credit.py",
+      "role": "最近 30 条取件评价均分",
+      "group": "12. C 部分完整业务源码",
+      "lines": 20,
+      "sha256": "d0cdd14514e0878200ca4fb1622bc5768c7a3c8190cef0cc6c38329c37c9e062"
+    },
+    {
+      "id": "source-8",
+      "path": "backend/app/modules/fulfillment/migrate_receipt.py",
+      "role": "保留历史完结事实的确认收货流程迁移",
+      "group": "12. C 部分完整业务源码",
+      "lines": 50,
+      "sha256": "a7730d40dccc77fe09a8b95a2c25c85d8a82ca0b92fafe92f83746d226176124"
+    },
+    {
+      "id": "source-9",
+      "path": "frontend/src/features/fulfillment/api.js",
+      "role": "C 前端请求封装和显示映射",
+      "group": "12. C 部分完整业务源码",
+      "lines": 31,
+      "sha256": "3e9ebaa59b09e6778e73128b7bd71f105b20497f42e08c4d157105d756c8bf97"
+    },
+    {
+      "id": "source-10",
+      "path": "frontend/src/features/fulfillment/OrdersView.vue",
+      "role": "订单页面入口",
+      "group": "12. C 部分完整业务源码",
+      "lines": 12,
+      "sha256": "ce8d6af75708f6706627fe8811d24384702cc99b930ea2e00398980c6ddde0f1"
+    },
+    {
+      "id": "source-11",
+      "path": "frontend/src/features/fulfillment/OrderWorkspace.vue",
+      "role": "订单工作台、履约交互和轮询",
+      "group": "12. C 部分完整业务源码",
+      "lines": 542,
+      "sha256": "f3b053b2cadcad149f4711d666f285797cf8c1d16f3133517f64c72c58986a47"
+    },
+    {
+      "id": "source-12",
+      "path": "frontend/src/features/fulfillment/OrderReviews.vue",
+      "role": "单个订单的双向评价",
+      "group": "12. C 部分完整业务源码",
+      "lines": 165,
+      "sha256": "e13e7aeb08784c6ab47982b38f6c2935706b391b8d416e126928006c933c3397"
+    },
+    {
+      "id": "source-13",
+      "path": "frontend/src/features/fulfillment/ReviewsView.vue",
+      "role": "本人信用与评价页面",
+      "group": "12. C 部分完整业务源码",
+      "lines": 112,
+      "sha256": "82cbd43e117ecadd5f2d99f1aea406c8da7d8cf47f7f0e5e38bb72caa85d0799"
+    },
+    {
+      "id": "source-14",
+      "path": "backend/app/main.py",
+      "role": "公共应用入口：接入 C 的表和路由",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 98,
+      "sha256": "098f5d1d867c9f7ba0e2f396fb25116dffdfcd98d5b3bde16db6d7df0ff807ca"
+    },
+    {
+      "id": "source-15",
+      "path": "backend/app/events/wiring.py",
+      "role": "公共事件订阅：接入 C 开放评价消费者",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 16,
+      "sha256": "8da010f2bec1272672edbc301afcaa80d34083a0f3e35d3e5525afd595e313d8"
+    },
+    {
+      "id": "source-16",
+      "path": "backend/app/events/schema.py",
+      "role": "公共状态事件枚举：增加 completed",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 117,
+      "sha256": "08ee0806be2269ea8263b0ac244891f3e931482700470ce35549b6d605e2b815"
+    },
+    {
+      "id": "source-17",
+      "path": "backend/app/modules/orders/gateway.py",
+      "role": "B 受控写入口：发布者收货与配送动作分离",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 86,
+      "sha256": "ddf2def64a4ebd5b39862fc39405edf92b7641e797286a3d1cff3b30c1e46e34"
+    },
+    {
+      "id": "source-18",
+      "path": "backend/app/modules/orders/api.py",
+      "role": "B 查询：completed 状态过滤",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 166,
+      "sha256": "a57cb8356bd845607dfe5a763c4002f20e7e33937be24154d79bc3008de8a756"
+    },
+    {
+      "id": "source-19",
+      "path": "backend/app/modules/orders/projections.py",
+      "role": "B 既有大厅投影：兼容历史完结状态重命名",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 60,
+      "sha256": "2fcae0c0736d6486739bce7bc13434bd8ceaefde0e326eaf7f5759401357fc22"
+    },
+    {
+      "id": "source-20",
+      "path": "backend/app/modules/finance/services/settlement.py",
+      "role": "D 结算消费者：仅 completed 可结算",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 44,
+      "sha256": "171a759a580930e0cd8a1c4851de4bc917c077756b649b79f80012912960ab75"
+    },
+    {
+      "id": "source-21",
+      "path": "backend/app/modules/finance/README.md",
+      "role": "D 说明：收货后结算的集成边界",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 118,
+      "sha256": "d177759eb53b6bbc6e19b887e60fd8a0856869ebc01fd629bdbd810ec8191e3f"
+    },
+    {
+      "id": "source-22",
+      "path": "backend/scripts/init_db.py",
+      "role": "初始化入口：注册 C 模型",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 31,
+      "sha256": "72ca611c24fe1cb863d8476aea2a89f0101c748c2dea7ea95ea04d17e579ebf6"
+    },
+    {
+      "id": "source-23",
+      "path": "frontend/src/App.vue",
+      "role": "公共导航：更新订单和评价页的服务标签",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 151,
+      "sha256": "b3b47cec39b6318ba3e4824d8a634c9d596e48527a8aaf357e8cb6f03b66706f"
+    },
+    {
+      "id": "source-24",
+      "path": "frontend/src/features/orders/PublishView.vue",
+      "role": "B 既有发布页：收货状态与详细地址提示文案",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 948,
+      "sha256": "b01abee212f3890190e73b2d08a63427bb23b865df3ffb76acbd63a8e37bddad"
+    },
+    {
+      "id": "source-25",
+      "path": "frontend/src/features/orders/HallTaskDialog.vue",
+      "role": "B 既有大厅弹窗：仅提示接单后提供详细地址",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 191,
+      "sha256": "b9ce3aa527e1d6ea8aac5f296b492470c0adc583aeef025d0b0665503088261e"
+    },
+    {
+      "id": "source-26",
+      "path": "frontend/package.json",
+      "role": "前端命令：加入 C 浏览器测试",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 31,
+      "sha256": "06536d30be1ed85463ce7169e720023dc01e31972a20600798459c381542d7c2"
+    },
+    {
+      "id": "source-27",
+      "path": "backend/tests/test_events_integration.py",
+      "role": "公共事件集成测试：同时结算并开放评价",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 312,
+      "sha256": "80957e2a478cd6d75c59db3a8b66c3ed1c3cf32026d470b8595a91864de6e93d"
+    },
+    {
+      "id": "source-28",
+      "path": "README.md",
+      "role": "团队说明中的 C 启动、测试及演示说明",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 142,
+      "sha256": "8749dce5d5325d0e4247b6a06b8ec3527a601749b070e48e868d62f24b65691d"
+    },
+    {
+      "id": "source-29",
+      "path": "docs/团队接口约定.md",
+      "role": "个人功能、质量、约束和交付契约",
+      "group": "13. 修改过的公共接入与需求文档",
+      "lines": 426,
+      "sha256": "b24c96e1c9c0717ffc85cd8a7cee8249f598265ef78f87f0115606b1a304adcb"
+    },
+    {
+      "id": "source-30",
+      "path": "backend/tests/test_fulfillment.py",
+      "role": "C 后端功能、并发、权限与收货边界测试",
+      "group": "14. C 部分完整测试和测试配置",
+      "lines": 380,
+      "sha256": "484ee1a3e804169637caed03821108ac05eb8ab4c41f6c8e50d0696524b2b6ff"
+    },
+    {
+      "id": "source-31",
+      "path": "backend/tests/test_receipt_migration.py",
+      "role": "旧流程无损迁移和冲突回滚测试",
+      "group": "14. C 部分完整测试和测试配置",
+      "lines": 138,
+      "sha256": "cca59dfdb8bb81dfb9d0302f567fea9e10dd1660cc82bba233c83f9f83ee26f6"
+    },
+    {
+      "id": "source-32",
+      "path": "backend/tests/test_finance_settlement.py",
+      "role": "D 结算边界与幂等回归测试",
+      "group": "14. C 部分完整测试和测试配置",
+      "lines": 161,
+      "sha256": "5e4de4b440c1a827910b09bbf3fe62b34926955e384c8a72a8b334636c45826f"
+    },
+    {
+      "id": "source-33",
+      "path": "backend/tests/test_finance_trade_audit.py",
+      "role": "跨订单资金守恒、退款结算竞争回归测试",
+      "group": "14. C 部分完整测试和测试配置",
+      "lines": 164,
+      "sha256": "d3d611ff8a7dcdd81a9ee5d287b6213ef0ef261387d4cdbb148f5abcfb14c11d"
+    },
+    {
+      "id": "source-34",
+      "path": "frontend/tests/fulfillment.spec.js",
+      "role": "浏览器验收场景",
+      "group": "14. C 部分完整测试和测试配置",
+      "lines": 353,
+      "sha256": "a06a7769f7e2e7f8f4e178067d000eddb693b6f831eae5f68ac4642c66764455"
+    },
+    {
+      "id": "source-35",
+      "path": "frontend/playwright.fulfillment.config.js",
+      "role": "临时测试服务、端口和运行配置",
+      "group": "14. C 部分完整测试和测试配置",
+      "lines": 22,
+      "sha256": "4e56e30da930bc0da326d974101ed99eb67e2c893d52eae9d22b1b3b63d54123"
+    }
+  ]
+}

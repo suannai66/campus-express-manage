@@ -2,8 +2,31 @@
 from sqlalchemy import select
 from ...common import fail, fingerprint
 from ...events.schema import validate
+from ...events.models import OutboxEvent
 from .gateway import OrderGateway
 from .handlers import EventReceipt
+
+
+def legacy_delivery_matches(db, order, data):
+    """旧 delivered 完结重命名后，保留原状态事件而以匹配的完结事实校准。"""
+    body = data["payload"]
+    if (order.status != "completed" or data["version"] != order.version
+            or (body["fromStatus"], body["status"], body["courierUid"])
+            != ("delivering", "delivered", order.courier_uid)):
+        return False
+    expected = {"publisherUid": order.publisher_uid, "courierUid": order.courier_uid,
+                "amount": order.amount, "baseFee": order.base_fee, "tip": order.tip,
+                "commissionRateBps": order.commission_bps, "pricingVersion": order.pricing_version,
+                "orderVersion": order.version}
+    events = db.scalars(select(OutboxEvent).where(OutboxEvent.order_id == order.id,
+                                                 OutboxEvent.type == "order.completed"))
+    for event in events:
+        completion, digest = validate(event.body)
+        if (event.digest == digest and completion["type"] == "order.completed"
+                and completion["orderId"] == order.id and completion["version"] == order.version
+                and completion["payload"] == expected):
+            return True
+    return False
 
 
 def handle(db, event):
@@ -26,7 +49,9 @@ def handle(db, event):
                 or body["amount"] != order.amount or body["paymentId"] != order.payment_id
                 or body["paid"] != (order.payment_status == "paid")):
             fail(409, "ORDER_CONFLICT", "取消事件与订单事实不一致")
-    elif data["version"] == order.version and (body["status"], body["courierUid"]) != (order.status, order.courier_uid):
+    elif (data["version"] == order.version
+          and (body["status"], body["courierUid"]) != (order.status, order.courier_uid)
+          and not legacy_delivery_matches(db, order, data)):
         fail(409, "ORDER_CONFLICT", "状态事件与当前订单快照不一致")
     result = {"accepted": True, "orderId": order.id, "version": order.version, "status": order.status}
     db.add(EventReceipt(id=f"orders:{data['eventId']}", consumer="orders",
