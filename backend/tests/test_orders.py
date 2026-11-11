@@ -94,6 +94,31 @@ class OrderTests(unittest.TestCase):
     def test_delivery_time(self):
         for value in [iso(now() - timedelta(seconds=1)), iso(now() + timedelta(days=8)), "2030-01-01T12:00"]:
             self.assertEqual(self.create({**self.body, "expectedAt": value}).status_code, 422)
+    def test_delivery_time_requires_iso_string_before_coercion(self):
+        future = now() + timedelta(hours=2)
+        seconds = int(future.timestamp())
+        for value in [seconds, seconds * 1000, seconds + 0.5, str(seconds), str(seconds * 1000),
+                      True, None, future.replace(tzinfo=None).isoformat(), future.date().isoformat()]:
+            for path in ["/api/orders", "/api/orders/quote"]:
+                with self.subTest(path=path, value=value):
+                    response = self.client.post(path, json={**self.body, "expectedAt": value}, headers=self.headers())
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertEqual(response.json()["code"], "VALIDATION_ERROR")
+                    self.assertIn("expectedAt", response.json()["fields"])
+        with self.sessions() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 0)
+
+    def test_delivery_time_accepts_iso_offsets_and_normalizes_utc(self):
+        from datetime import timezone
+        future = now() + timedelta(hours=2)
+        for value in [iso(future), future.astimezone(timezone(timedelta(hours=8))).isoformat()]:
+            draft = {**self.body, "expectedAt": value}
+            quote = self.client.post("/api/orders/quote", json=draft, headers=self.headers())
+            self.assertEqual(quote.status_code, 200, quote.text)
+            response = self.create(draft)
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(response.json()["expectedAt"], iso(future))
+
     def test_identity_admission(self):
         self.assertEqual(self.client.get("/api/orders").status_code, 401)
         self.assertEqual(self.create(uid="unverified").json()["code"], "VERIFICATION_REQUIRED")
