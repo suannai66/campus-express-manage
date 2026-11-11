@@ -312,7 +312,7 @@ onBeforeUnmount(() => {
         >
       </h2>
       <p>
-        仅展示已支付的待接单需求，不包含自己发布的订单。时间按新加坡时间（UTC+8）显示。
+        仅展示已支付的待接单需求，不包含自己发布的订单。时间按北京时间（UTC+8）显示。
       </p>
     </div>
     <button
@@ -327,7 +327,7 @@ onBeforeUnmount(() => {
     每 10 秒自动更新 · 最近更新
     {{
       lastUpdated.toLocaleTimeString("zh-CN", {
-        timeZone: "Asia/Singapore",
+        timeZone: "Asia/Shanghai",
         hour12: false,
       })
     }}

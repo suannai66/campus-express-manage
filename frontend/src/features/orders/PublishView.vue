@@ -158,7 +158,7 @@ const sections = computed(() => [
         key: "time",
         label: "期望送达时间",
         type: "datetime-local",
-        help: "新加坡时间（UTC+8），未来七天内",
+        help: "北京时间（UTC+8），未来七天内",
       },
       {
         key: "tip",

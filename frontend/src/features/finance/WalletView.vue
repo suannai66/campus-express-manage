@@ -239,7 +239,7 @@ async function pollWithdrawal(withdrawId, cents) {
       <span class="ledger-type">{{ TYPE_LABELS[item.type] || item.type }}</span>
       <span class="ledger-time">{{
         new Date(item.createdAt).toLocaleString("zh-CN", {
-          timeZone: "Asia/Singapore",
+          timeZone: "Asia/Shanghai",
         })
       }}</span>
       <strong :class="item.direction === 'in' ? 'ledger-in' : 'ledger-out'"

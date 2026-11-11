@@ -21,6 +21,9 @@ export async function fillDraft(page) {
 test("F3 使用目录、整数分，创建预占并通过支付事件发布", async ({ page }) => {
   await login(page);
   await page.goto("/publish");
+  await expect(
+    page.getByText("北京时间（UTC+8），未来七天内", { exact: true }),
+  ).toBeVisible();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await fillDraft(page);
