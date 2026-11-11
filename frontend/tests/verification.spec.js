@@ -7,6 +7,31 @@ const fixture = fileURLToPath(
   new URL("./fixtures/学生证样例.png", import.meta.url),
 );
 const code = "482917";
+
+test("演示按钮手动通过本人申请并刷新历史和通知", async ({ page, request }) => {
+  const user = await student(request);
+  await use(page, user);
+  const button = page.getByRole("button", { name: "自动审核（演示）" });
+  await expect(button).toBeVisible();
+  await expect(button).toBeDisabled();
+  await submitUI(page, "演示同学");
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(
+    page.getByText("认证已通过。", { exact: false }).first(),
+  ).toBeVisible();
+  await expect(button).toBeDisabled();
+  await expect(page.getByRole("status")).toContainText("演示审核已通过");
+  const status = await request.get("/api/auth/verify-status", {
+    headers: { Authorization: `Bearer ${user.accessToken}` },
+  });
+  expect((await status.json()).verified).toBe(true);
+  await page.reload();
+  await expect(button).toBeDisabled();
+  await expect(
+    page.getByText("认证已通过。", { exact: false }).first(),
+  ).toBeVisible();
+});
 async function credentials(request, phone) {
   expect(
     (

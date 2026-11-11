@@ -6,6 +6,7 @@ import VerificationRecords from "./VerificationRecords.vue";
 import VerificationPhoto from "./VerificationPhoto.vue";
 import { verificationApi, statusLabels } from "./verification-api";
 const state = ref(null),
+  demoEnabled = ref(false),
   history = ref(null),
   notifications = ref(null),
   busy = ref(false),
@@ -58,6 +59,22 @@ function choose(event) {
   }
   file.value = value;
 }
+async function demoApprove() {
+  if (busy.value || loading.value || state.value?.status !== "pending") return;
+  busy.value = true;
+  error.value = "";
+  message.value = "";
+  try {
+    await verificationApi.demoApprove();
+    message.value = "演示审核已通过，可以发布需求和接单了。";
+    await refresh();
+  } catch (cause) {
+    await refresh();
+    error.value = cause.message;
+  } finally {
+    busy.value = false;
+  }
+}
 async function submit() {
   if (busy.value || loading.value || !canSubmit.value) return;
   error.value = "";
@@ -108,6 +125,12 @@ function refreshPending() {
     refresh();
 }
 onMounted(() => {
+  verificationApi
+    .demoCapability()
+    .then((result) => {
+      if (!disposed) demoEnabled.value = result.enabled;
+    })
+    .catch(() => {});
   refresh();
   timer = setInterval(refreshPending, 10000);
   document.addEventListener("visibilitychange", refreshPending);
@@ -124,7 +147,16 @@ onBeforeUnmount(() => {
     title="确认校园身份，让互助更安心"
     subtitle="学生认证是发布需求和接单的必要条件，接单还需满足信用等规则。"
     eyebrow="STUDENT VERIFICATION"
-  />
+  >
+    <button
+      v-if="demoEnabled"
+      class="primary-button"
+      :disabled="busy || loading || state?.status !== 'pending'"
+      @click="demoApprove"
+    >
+      {{ busy ? "正在处理…" : "自动审核（演示）" }}
+    </button>
+  </PageHeading>
   <p v-if="error" role="alert" class="notice">{{ error }}</p>
   <p v-if="message" role="status" class="notice">{{ message }}</p>
   <section class="panel form-panel">
