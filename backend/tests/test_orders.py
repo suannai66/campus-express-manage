@@ -119,6 +119,27 @@ class OrderTests(unittest.TestCase):
             self.assertEqual(response.status_code, 201, response.text)
             self.assertEqual(response.json()["expectedAt"], iso(future))
 
+    def test_all_order_endpoints_reject_undeclared_query_fields(self):
+        order = self.create().json()
+        cases = [
+            ("GET", "/api/orders/locations", None),
+            ("GET", "/api/orders", None),
+            ("GET", f"/api/orders/{order['orderId']}", None),
+            ("POST", "/api/orders/quote", self.body),
+            ("POST", "/api/orders", self.body),
+            ("POST", f"/api/orders/{order['orderId']}/payment-request", {"version": 1}),
+        ]
+        for method, path, body in cases:
+            with self.subTest(method=method, path=path):
+                response = self.client.request(method, path + "?unexpected=1", json=body, headers=self.headers())
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["code"], "VALIDATION_ERROR")
+        self.assertEqual(self.client.get("/api/orders/locations").status_code, 200)
+        self.assertEqual(self.client.get("/api/orders/locations?unexpected=1").status_code, 422)
+        self.assertEqual(self.get(f"/api/orders/{order['orderId']}").json()["version"], 1)
+        with self.sessions() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(Order)), 1)
+
     def test_identity_admission(self):
         self.assertEqual(self.client.get("/api/orders").status_code, 401)
         self.assertEqual(self.create(uid="unverified").json()["code"], "VERIFICATION_REQUIRED")
