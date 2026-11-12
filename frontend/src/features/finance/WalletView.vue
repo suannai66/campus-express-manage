@@ -1,7 +1,8 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { nextTick, onMounted, ref } from "vue";
 import { X } from "@lucide/vue";
 import PageHeading from "../../components/PageHeading.vue";
+import FinanceDialog from "./FinanceDialog.vue";
 import MockCashier from "./MockCashier.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import { request } from "../../services/http";
@@ -23,6 +24,27 @@ const rechargePending = ref(false);
 const confirmPending = ref(false);
 const withdrawPending = ref(false);
 const withdrawCashier = ref(null);
+const amountInvalid = ref(false);
+let walletTrigger;
+
+function restoreWalletFocus() {
+  nextTick(() => walletTrigger?.focus());
+}
+
+function closeAmountDialog(open, pending) {
+  if (pending.value) return;
+  open.value = false;
+  error.value = "";
+  restoreWalletFocus();
+}
+
+function closeRecharge() {
+  closeAmountDialog(rechargeOpen, rechargePending);
+}
+
+function closeWithdraw() {
+  closeAmountDialog(withdrawOpen, withdrawPending);
+}
 
 const TYPE_LABELS = {
   recharge: "充值入账",
@@ -33,7 +55,9 @@ const TYPE_LABELS = {
 };
 const yuan = (cents) => (cents / 100).toFixed(2);
 
-function openRecharge() {
+function openRecharge(event) {
+  walletTrigger = event.currentTarget;
+  amountInvalid.value = false;
   rechargeKey.value = crypto.randomUUID();
   rechargeAmount.value = "";
   message.value = "";
@@ -41,7 +65,9 @@ function openRecharge() {
   rechargeOpen.value = true;
 }
 
-function openWithdraw() {
+function openWithdraw(event) {
+  walletTrigger = event.currentTarget;
+  amountInvalid.value = false;
   withdrawKey.value = crypto.randomUUID();
   withdrawAmount.value = "";
   message.value = "";
@@ -89,6 +115,7 @@ function parseAmount(value) {
 async function submitRecharge() {
   if (rechargePending.value) return;
   const cents = parseAmount(rechargeAmount.value);
+  amountInvalid.value = cents === null;
   if (cents === null) {
     error.value = "金额须为 0.01 至 1000 元，最多两位小数。";
     return;
@@ -124,6 +151,7 @@ async function confirmPaid() {
     const amount = yuan(cashierOrder.value.amount);
     cashierOrder.value = null;
     rechargeOpen.value = false;
+    restoreWalletFocus();
     message.value = `充值成功 +¥${amount}`;
     refreshAll();
   } catch (err) {
@@ -135,6 +163,7 @@ async function confirmPaid() {
 
 function prepareWithdraw() {
   const cents = parseAmount(withdrawAmount.value);
+  amountInvalid.value = cents === null;
   if (cents === null) {
     error.value = "金额须为 0.01 至 1000 元，最多两位小数。";
     return;
@@ -159,6 +188,7 @@ async function submitWithdraw() {
       body: JSON.stringify({ amount: cents }),
     });
     withdrawOpen.value = false;
+    restoreWalletFocus();
     withdrawCashier.value = null;
     message.value = "提现申请已提交，模拟银行处理中…";
     refreshAll();
@@ -210,19 +240,11 @@ async function pollWithdrawal(withdrawId, cents) {
       ><button class="hero-link" @click="openWithdraw">模拟提现 ↗</button>
     </div>
   </section>
-  <p v-if="message" role="status" class="notice">{{ message }}</p>
-  <p
-    v-if="
-      error &&
-      !rechargeOpen &&
-      !withdrawOpen &&
-      !cashierOrder &&
-      !withdrawCashier
-    "
-    role="alert"
-    class="notice"
-  >
-    {{ error }}
+  <p role="status" aria-atomic="true" :class="{ notice: message }">
+    {{ message }}
+  </p>
+  <p role="alert" :class="{ notice: error && !rechargeOpen && !withdrawOpen }">
+    {{ rechargeOpen || withdrawOpen ? "" : error }}
   </p>
   <div class="section-heading">
     <h2>收支流水</h2>
@@ -250,44 +272,48 @@ async function pollWithdrawal(withdrawId, cents) {
   </ul>
 
   <!-- 充值弹窗 -->
-  <div
+  <FinanceDialog
     v-if="rechargeOpen && !cashierOrder"
-    class="dialog-backdrop"
-    @click.self="rechargeOpen = false"
+    labelledby="recharge-title"
+    :pending="rechargePending"
+    @dismiss="closeRecharge"
   >
-    <section
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="recharge-title"
+    <button
+      class="dialog-close icon-button"
+      aria-label="关闭"
+      :disabled="rechargePending"
+      @click="closeRecharge"
     >
-      <button
-        class="dialog-close icon-button"
-        aria-label="关闭"
-        @click="rechargeOpen = false"
-      >
-        <X :size="20" />
-      </button>
-      <p class="eyebrow">MOCK RECHARGE</p>
-      <h2 id="recharge-title">模拟充值</h2>
-      <p>演示环境使用模拟资金，不产生真实交易。</p>
-      <p v-if="error" role="alert">{{ error }}</p>
-      <label
-        >充值金额（元）<input
-          v-model="rechargeAmount"
-          type="number"
-          min="0.01"
-          step="0.01"
-          placeholder="0.00" /></label
-      ><button
-        class="primary-button full-width"
-        :disabled="rechargePending"
-        @click="submitRecharge"
-      >
-        去支付
-      </button>
-    </section>
-  </div>
+      <X :size="20" />
+    </button>
+    <p class="eyebrow">MOCK RECHARGE</p>
+    <h2 id="recharge-title">模拟充值</h2>
+    <p>演示环境使用模拟资金，不产生真实交易。</p>
+    <div id="recharge-error" role="alert">{{ error }}</div>
+    <label
+      >充值金额（元）<input
+        v-model="rechargeAmount"
+        data-initial-focus
+        :aria-invalid="amountInvalid || undefined"
+        :aria-describedby="error ? 'recharge-error' : undefined"
+        :readonly="rechargePending"
+        @keydown.enter.prevent="submitRecharge"
+        @input="
+          amountInvalid = false;
+          error = '';
+        "
+        type="number"
+        min="0.01"
+        step="0.01"
+        placeholder="0.00" /></label
+    ><button
+      class="primary-button full-width"
+      :disabled="rechargePending"
+      @click="submitRecharge"
+    >
+      去支付
+    </button>
+  </FinanceDialog>
 
   <MockCashier
     v-if="cashierOrder"
@@ -317,44 +343,48 @@ async function pollWithdrawal(withdrawId, cents) {
   />
 
   <!-- 提现弹窗 -->
-  <div
+  <FinanceDialog
     v-if="withdrawOpen && !withdrawCashier"
-    class="dialog-backdrop"
-    @click.self="withdrawOpen = false"
+    labelledby="withdraw-title"
+    :pending="withdrawPending"
+    @dismiss="closeWithdraw"
   >
-    <section
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="withdraw-title"
+    <button
+      class="dialog-close icon-button"
+      aria-label="关闭"
+      :disabled="withdrawPending"
+      @click="closeWithdraw"
     >
-      <button
-        class="dialog-close icon-button"
-        aria-label="关闭"
-        @click="withdrawOpen = false"
-      >
-        <X :size="20" />
-      </button>
-      <p class="eyebrow">MOCK WITHDRAW</p>
-      <h2 id="withdraw-title">模拟提现</h2>
-      <p>金额不能超过可用余额；模拟渠道将在数秒内到账。</p>
-      <p v-if="error" role="alert">{{ error }}</p>
-      <label
-        >提现金额（元）<input
-          v-model="withdrawAmount"
-          type="number"
-          min="0.01"
-          step="0.01"
-          placeholder="0.00" /></label
-      ><button
-        class="primary-button full-width"
-        :disabled="withdrawPending"
-        @click="prepareWithdraw"
-      >
-        确认提现
-      </button>
-    </section>
-  </div>
+      <X :size="20" />
+    </button>
+    <p class="eyebrow">MOCK WITHDRAW</p>
+    <h2 id="withdraw-title">模拟提现</h2>
+    <p>金额不能超过可用余额。提交后请等待模拟处理结果。</p>
+    <div id="withdraw-error" role="alert">{{ error }}</div>
+    <label
+      >提现金额（元）<input
+        v-model="withdrawAmount"
+        data-initial-focus
+        :aria-invalid="amountInvalid || undefined"
+        :aria-describedby="error ? 'withdraw-error' : undefined"
+        :readonly="withdrawPending"
+        @keydown.enter.prevent="prepareWithdraw"
+        @input="
+          amountInvalid = false;
+          error = '';
+        "
+        type="number"
+        min="0.01"
+        step="0.01"
+        placeholder="0.00" /></label
+    ><button
+      class="primary-button full-width"
+      :disabled="withdrawPending"
+      @click="prepareWithdraw"
+    >
+      确认提现
+    </button>
+  </FinanceDialog>
 </template>
 <style scoped>
 .ledger-list {

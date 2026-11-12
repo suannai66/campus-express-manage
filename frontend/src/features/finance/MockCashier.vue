@@ -1,12 +1,6 @@
 <script setup>
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import FinanceDialog from "./FinanceDialog.vue";
 import { X, ShieldCheck, MessageCircle, Wallet } from "@lucide/vue";
 import QRCode from "qrcode";
 
@@ -22,14 +16,12 @@ const emit = defineEmits(["confirm", "close"]);
 const channel = ref("wechat");
 const qr = ref("");
 const qrError = ref("");
-const dialog = ref(null);
 const isRecharge = computed(() => props.operation === "recharge");
 const channelName = computed(() =>
   channel.value === "wechat" ? "微信" : "支付宝",
 );
 const money = computed(() => (props.amount / 100).toFixed(2));
 let generation = 0;
-let previousFocus;
 watch(
   () => [props.reference, props.operation, channel.value],
   async () => {
@@ -58,137 +50,100 @@ watch(
 function close() {
   if (!props.pending) emit("close");
 }
-function keyboard(event) {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    close();
-  }
-  if (event.key !== "Tab") return;
-  const items = [
-    ...dialog.value.querySelectorAll(
-      "button:not(:disabled), input:not(:disabled)",
-    ),
-  ];
-  if (!items.length) {
-    event.preventDefault();
-    dialog.value.focus();
-    return;
-  }
-  const first = items[0],
-    last = items[items.length - 1];
-  if (
-    event.shiftKey &&
-    (document.activeElement === first ||
-      document.activeElement === dialog.value)
-  ) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-}
-onMounted(async () => {
-  previousFocus = document.activeElement;
-  await nextTick();
-  dialog.value?.focus();
-});
 onBeforeUnmount(() => {
   generation++;
-  previousFocus?.focus?.();
 });
 </script>
 
 <template>
-  <div class="dialog-backdrop" @click.self="close">
-    <section
-      ref="dialog"
-      class="dialog cashier"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="mock-cashier-title"
-      tabindex="-1"
-      @keydown="keyboard"
+  <FinanceDialog
+    class="cashier"
+    labelledby="mock-cashier-title"
+    describedby="mock-cashier-amount"
+    :pending="pending"
+    @dismiss="close"
+  >
+    <button
+      class="dialog-close icon-button"
+      aria-label="关闭模拟收银台"
+      :disabled="pending"
+      @click="close"
     >
-      <button
-        class="dialog-close icon-button"
-        aria-label="关闭模拟收银台"
-        :disabled="pending"
-        @click="close"
+      <X :size="20" />
+    </button>
+    <p class="eyebrow">CAMPUS · DEMO CASHIER</p>
+    <h2 id="mock-cashier-title" tabindex="-1" data-initial-focus>
+      {{ isRecharge ? "模拟充值收银台" : "模拟提现确认" }}
+    </h2>
+    <p class="cashier-caption">
+      {{ isRecharge ? "选择模拟支付方式" : "选择模拟到账方式，无需付款" }}
+    </p>
+    <strong id="mock-cashier-amount" class="cashier-amount"
+      >金额 {{ money }} 元</strong
+    >
+    <fieldset class="channels" :disabled="pending">
+      <legend class="sr-label">模拟渠道</legend>
+      <label :class="{ selected: channel === 'wechat' }"
+        ><input
+          v-model="channel"
+          type="radio"
+          value="wechat"
+          name="mock-channel"
+        /><MessageCircle :size="22" class="wechat" /><span>微信</span></label
       >
-        <X :size="20" />
-      </button>
-      <p class="eyebrow">CAMPUS · DEMO CASHIER</p>
-      <h2 id="mock-cashier-title">
-        {{ isRecharge ? "模拟充值收银台" : "模拟提现确认" }}
-      </h2>
-      <p class="cashier-caption">
-        {{ isRecharge ? "选择模拟支付方式" : "选择模拟到账方式，无需付款" }}
-      </p>
-      <strong class="cashier-amount">¥ {{ money }}</strong>
-      <fieldset class="channels" :disabled="pending">
-        <legend class="sr-label">模拟渠道</legend>
-        <label :class="{ selected: channel === 'wechat' }"
-          ><input
-            v-model="channel"
-            type="radio"
-            value="wechat"
-            name="mock-channel"
-          /><MessageCircle :size="22" class="wechat" /><span>微信</span></label
-        >
-        <label :class="{ selected: channel === 'alipay' }"
-          ><input
-            v-model="channel"
-            type="radio"
-            value="alipay"
-            name="mock-channel"
-          /><Wallet :size="22" class="alipay" /><span>支付宝</span></label
-        >
-      </fieldset>
-      <div class="qr-panel">
-        <img
-          v-if="qr"
-          :src="qr"
-          :alt="`${channelName}模拟${isRecharge ? '充值' : '提现'}凭证二维码`"
-          width="208"
-          height="208"
-        />
-        <p v-else>{{ qrError || "正在生成模拟凭证…" }}</p>
-        <span
-          >{{ channelName }} ·
-          {{ isRecharge ? "模拟支付凭证" : "模拟收款凭证" }}</span
-        >
-      </div>
-      <p class="reference">
-        {{ isRecharge ? "充值单" : "模拟凭证" }} {{ reference }}
-      </p>
-      <p class="demo-note">
-        <ShieldCheck
-          :size="17"
-        />仅课堂演示，不连接微信或支付宝。二维码只包含模拟标识，扫码不会付款或入账。
-      </p>
-      <p v-if="error || qrError" role="alert" class="cashier-error">
-        {{ error || qrError }}
-      </p>
-      <button
-        class="primary-button full-width"
-        :disabled="pending || !qr"
-        :aria-label="isRecharge ? '我已支付（模拟确认）' : '确认模拟提现'"
-        @click="emit('confirm', channel)"
+      <label :class="{ selected: channel === 'alipay' }"
+        ><input
+          v-model="channel"
+          type="radio"
+          value="alipay"
+          name="mock-channel"
+        /><Wallet :size="22" class="alipay" /><span>支付宝</span></label
       >
-        {{
-          pending
-            ? "正在处理…"
-            : isRecharge
-              ? "我已支付（模拟确认）"
-              : "确认模拟提现"
-        }}
-      </button>
-      <button class="text-button full-width" :disabled="pending" @click="close">
-        稍后处理
-      </button>
-    </section>
-  </div>
+    </fieldset>
+    <div class="qr-panel">
+      <img
+        v-if="qr"
+        :src="qr"
+        :alt="`${channelName}模拟${isRecharge ? '充值' : '提现'}凭证二维码`"
+        width="208"
+        height="208"
+      />
+      <p v-else>{{ qrError || "正在生成模拟凭证…" }}</p>
+      <span
+        >{{ channelName }} ·
+        {{ isRecharge ? "模拟支付凭证" : "模拟收款凭证" }}</span
+      >
+    </div>
+    <p class="reference">
+      {{ isRecharge ? "充值单" : "模拟凭证" }} {{ reference }}
+    </p>
+    <p class="demo-note">
+      <ShieldCheck
+        :size="17"
+      />仅课堂演示，不连接微信或支付宝。二维码只包含模拟标识，扫码不会付款或入账。
+    </p>
+    <div role="alert" class="cashier-error">
+      {{ error || qrError }}
+    </div>
+    <div aria-live="polite">{{ pending ? "正在处理，请稍候。" : "" }}</div>
+    <button
+      class="primary-button full-width"
+      :disabled="pending || !qr"
+      :aria-label="isRecharge ? '我已支付（模拟确认）' : '确认模拟提现'"
+      @click="emit('confirm', channel)"
+    >
+      {{
+        pending
+          ? "正在处理…"
+          : isRecharge
+            ? "我已支付（模拟确认）"
+            : "确认模拟提现"
+      }}
+    </button>
+    <button class="text-button full-width" :disabled="pending" @click="close">
+      稍后处理
+    </button>
+  </FinanceDialog>
 </template>
 
 <style scoped>
