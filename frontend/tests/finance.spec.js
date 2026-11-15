@@ -213,7 +213,7 @@ test("充值响应丢失后同键重试只入账一次", async ({ page, request 
     } else await route.continue();
   });
   await page.getByRole("button", { name: /我已支付/ }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("alert")).toHaveText(/\S/);
   await page.getByRole("button", { name: /我已支付/ }).click();
   await expect(page.getByRole("status")).toContainText("充值成功");
   expect(keys).toHaveLength(2);
@@ -404,4 +404,85 @@ test("钱包金额拒绝超精度和越界输入，不静默改额", async ({ pa
     await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   }
   expect(writes).toHaveLength(0);
+});
+
+test("键盘可操作充值，关闭和完成后焦点回到入口", async ({ page, request }) => {
+  await visit(page, await student(request), "/wallet");
+  const trigger = page.getByRole("button", { name: "模拟充值", exact: true });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+
+  const amount = page.getByRole("spinbutton", { name: "充值金额（元）" });
+  await expect(amount).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(amount).toHaveAttribute("aria-invalid", "true");
+  await expect(amount).toHaveAccessibleDescription(/最多两位小数/);
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("10");
+  await page.keyboard.press("Enter");
+  const cashier = page.getByRole("dialog", { name: "模拟充值收银台" });
+  await expect(cashier).toHaveAccessibleDescription("金额 10.00 元");
+  await expect(cashier.getByRole("heading")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(cashier.getByRole("button", { name: "稍后处理" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    cashier.getByRole("button", { name: "关闭模拟收银台" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(cashier.getByRole("radio", { name: "微信" })).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(cashier.getByRole("radio", { name: "支付宝" })).toBeChecked();
+  const confirm = cashier.getByRole("button", { name: /我已支付/ });
+  await expect(confirm).toBeEnabled();
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("status")).toContainText("充值成功");
+  await expect(trigger).toBeFocused();
+});
+
+test("强制颜色模式下用键盘提现并播报失败回补状态", async ({
+  page,
+  request,
+}) => {
+  await visit(page, await student(request), "/wallet");
+  await recharge(page);
+  await page.emulateMedia({ forcedColors: "active" });
+  const trigger = page.getByRole("button", {
+    name: "模拟提现 ↗",
+    exact: true,
+  });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("spinbutton", { name: "提现金额（元）" }),
+  ).toBeFocused();
+  await page.keyboard.type("5");
+  await page.keyboard.press("Enter");
+
+  const cashier = page.getByRole("dialog", { name: "模拟提现确认" });
+  await expect(cashier).toHaveAccessibleDescription("金额 5.00 元");
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("spinbutton", { name: "提现金额（元）" }),
+  ).toBeFocused();
+  await page.keyboard.press("Enter");
+  const confirm = cashier.getByRole("button", { name: "确认模拟提现" });
+  await expect(confirm).toBeEnabled();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await expect(confirm).toHaveCSS("outline-style", "solid");
+  await page.keyboard.press("Enter");
+  await expect(trigger).toBeFocused();
+  await expect(page.getByRole("status")).toContainText("处理中");
+  await expect(page.getByRole("status")).toContainText("金额已退回", {
+    timeout: 15000,
+  });
+  await expect(page.locator(".wallet-banner strong")).toHaveText("¥ 10.00");
 });
