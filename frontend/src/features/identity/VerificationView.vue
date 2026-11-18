@@ -1,5 +1,12 @@
 <script setup>
-import { computed, onMounted, onBeforeUnmount, ref } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onBeforeUnmount,
+  ref,
+  watch,
+} from "vue";
 import { ShieldCheck } from "@lucide/vue";
 import PageHeading from "../../components/PageHeading.vue";
 import VerificationRecords from "./VerificationRecords.vue";
@@ -10,6 +17,7 @@ const state = ref(null),
   history = ref(null),
   notifications = ref(null),
   busy = ref(false),
+  checking = ref(false),
   loading = ref(true);
 const error = ref(""),
   message = ref(""),
@@ -17,14 +25,33 @@ const error = ref(""),
   number = ref(""),
   file = ref(null),
   input = ref(null),
-  photo = ref(null);
+  photo = ref(null),
+  confirmation = ref(null),
+  confirmTitle = ref(null),
+  submitButton = ref(null);
 const canSubmit = computed(
   () =>
     state.value && ["not_submitted", "rejected"].includes(state.value.status),
 );
 let timer,
   generation = 0,
+  previewUrl = "",
   disposed = false;
+function clearConfirmation() {
+  confirmation.value = null;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = "";
+}
+watch(canSubmit, (allowed) => {
+  if (!allowed) clearConfirmation();
+});
+async function returnToEdit() {
+  if (busy.value) return;
+  clearConfirmation();
+  error.value = "";
+  await nextTick();
+  submitButton.value?.focus();
+}
 async function refresh() {
   if (disposed) return;
   const version = ++generation;
@@ -75,23 +102,74 @@ async function demoApprove() {
     busy.value = false;
   }
 }
-async function submit() {
-  if (busy.value || loading.value || !canSubmit.value) return;
+async function prepareConfirmation() {
+  if (
+    busy.value ||
+    checking.value ||
+    loading.value ||
+    !canSubmit.value ||
+    confirmation.value
+  )
+    return;
   error.value = "";
   message.value = "";
   if (!name.value.trim() || !number.value.trim() || !file.value) {
     error.value = "请填写姓名、学号并选择证件照片。";
     return;
   }
+  checking.value = true;
+  const draft = {
+    realName: name.value.trim(),
+    studentNo: number.value.trim(),
+    photo: file.value,
+  };
+  previewUrl = URL.createObjectURL(draft.photo);
+  try {
+    const image = new Image();
+    image.src = previewUrl;
+    await image.decode();
+    if (image.naturalWidth * image.naturalHeight > 25_000_000) {
+      throw new Error("照片像素过大，请选择不超过2500万像素的照片。");
+    }
+    if (disposed || !canSubmit.value) {
+      clearConfirmation();
+      return;
+    }
+    confirmation.value = { ...draft, previewUrl };
+    await nextTick();
+    confirmTitle.value?.focus();
+  } catch (cause) {
+    clearConfirmation();
+    if (!disposed)
+      error.value = cause.message.includes("像素")
+        ? cause.message
+        : "照片内容无效或无法预览，请重新选择清晰的JPEG / PNG照片。";
+  } finally {
+    checking.value = false;
+  }
+}
+async function submit() {
+  if (
+    busy.value ||
+    checking.value ||
+    loading.value ||
+    !canSubmit.value ||
+    !confirmation.value
+  )
+    return;
+  const draft = confirmation.value;
+  error.value = "";
+  message.value = "";
   busy.value = true;
   try {
     const body = new FormData();
-    body.append("realName", name.value.trim());
-    body.append("studentNo", number.value.trim());
-    body.append("photo", file.value);
+    body.append("realName", draft.realName);
+    body.append("studentNo", draft.studentNo);
+    body.append("photo", draft.photo);
     const result = await verificationApi.submit(body);
     if (disposed) return;
     state.value = { ...result, verified: false, rejectReason: null };
+    clearConfirmation();
     message.value = "认证资料已提交，请等待管理员审核。";
     file.value = null;
     if (input.value) input.value.value = "";
@@ -138,6 +216,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   generation++;
+  clearConfirmation();
   clearInterval(timer);
   document.removeEventListener("visibilitychange", refreshPending);
 });
@@ -170,7 +249,11 @@ onBeforeUnmount(() => {
         state ? statusLabels[state.status] : "正在查询认证状态"
       }}</span>
     </div>
-    <button class="text-button" :disabled="busy || loading" @click="refresh">
+    <button
+      class="text-button"
+      :disabled="busy || checking || loading"
+      @click="refresh"
+    >
       刷新认证结果
     </button>
     <p v-if="state?.status === 'pending'" class="notice">
@@ -182,8 +265,15 @@ onBeforeUnmount(() => {
     <p v-if="state?.rejectReason" class="notice">
       驳回理由：{{ state.rejectReason }}。请更正资料后重新提交。
     </p>
-    <form v-if="canSubmit" @submit.prevent="submit">
-      <fieldset :disabled="busy || loading" class="verification-fields">
+    <form
+      v-if="canSubmit"
+      v-show="!confirmation"
+      @submit.prevent="prepareConfirmation"
+    >
+      <fieldset
+        :disabled="busy || checking || loading"
+        class="verification-fields"
+      >
         <div class="form-grid">
           <label
             >真实姓名<input
@@ -212,10 +302,10 @@ onBeforeUnmount(() => {
             万像素。仅本人及审核管理员可查看；课程演示请使用虚构资料。</small
           ></label
         >
-        <button class="primary-button" type="submit">
+        <button ref="submitButton" class="primary-button" type="submit">
           {{
-            busy
-              ? "正在提交…"
+            checking
+              ? "正在检查照片…"
               : state?.status === "rejected"
                 ? "重新提交认证"
                 : "提交认证申请"
@@ -223,6 +313,44 @@ onBeforeUnmount(() => {
         </button>
       </fieldset>
     </form>
+    <section
+      v-if="confirmation"
+      aria-labelledby="verification-confirm-title"
+      class="verification-confirmation"
+    >
+      <h3 id="verification-confirm-title" ref="confirmTitle" tabindex="-1">
+        确认认证资料
+      </h3>
+      <p>
+        请核对以下资料。确认提交后进入管理员审核，待审核期间不能修改或重复提交。
+      </p>
+      <dl>
+        <dt>真实姓名</dt>
+        <dd>{{ confirmation.realName }}</dd>
+        <dt>学号</dt>
+        <dd>{{ confirmation.studentNo }}</dd>
+      </dl>
+      <img :src="confirmation.previewUrl" alt="本次待提交的学生证件照片" />
+      <p class="muted">仅本人及审核管理员可查看认证资料。</p>
+      <div class="confirmation-actions">
+        <button
+          type="button"
+          class="outline-button"
+          :disabled="busy"
+          @click="returnToEdit"
+        >
+          返回修改
+        </button>
+        <button
+          type="button"
+          class="primary-button"
+          :disabled="busy || loading"
+          @click="submit"
+        >
+          {{ busy ? "正在提交…" : "确认提交" }}
+        </button>
+      </div>
+    </section>
   </section>
   <VerificationRecords
     :history="history"
@@ -246,5 +374,30 @@ onBeforeUnmount(() => {
 }
 .form-panel {
   overflow-wrap: anywhere;
+}
+.verification-confirmation {
+  margin-top: 24px;
+}
+.verification-confirmation dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px 20px;
+  margin: 20px 0;
+}
+.verification-confirmation dd {
+  margin: 0;
+}
+.verification-confirmation img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  margin: 20px 0;
+}
+.confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
 }
 </style>

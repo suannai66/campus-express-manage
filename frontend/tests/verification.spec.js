@@ -66,13 +66,23 @@ async function use(page, account, path = "/verification") {
   );
   await page.goto(path);
 }
-async function submitUI(page, name) {
+async function fillApplication(page, name) {
   await page.getByLabel("真实姓名", { exact: true }).fill(name);
   await page.getByLabel("学号", { exact: true }).fill("202600123456");
   await page.locator("input[type=file]").setInputFiles(fixture);
+}
+async function openConfirmation(page) {
   await page
     .getByRole("button", { name: /^(提交认证申请|重新提交认证)$/ })
     .click();
+  await expect(
+    page.getByRole("heading", { name: "确认认证资料", exact: true }),
+  ).toBeFocused();
+}
+async function submitUI(page, name) {
+  await fillApplication(page, name);
+  await openConfirmation(page);
+  await page.getByRole("button", { name: "确认提交", exact: true }).click();
   await expect(page.getByText("待审核", { exact: true }).first()).toBeVisible();
 }
 
@@ -266,6 +276,14 @@ test("普通用户不能查看审核资料，照片越权返回 404", async ({
 
 test("上传失败显示错误，认证状态保持未提交", async ({ page, request }) => {
   await use(page, await student(request));
+  let submissions = 0;
+  page.on("request", (r) => {
+    if (
+      r.method() === "POST" &&
+      new URL(r.url()).pathname === "/api/auth/verification-applications"
+    )
+      submissions++;
+  });
   await page.getByLabel("真实姓名", { exact: true }).fill("虚构学生");
   await page.getByLabel("学号", { exact: true }).fill("202600001");
   await page.locator("input[type=file]").setInputFiles({
@@ -275,7 +293,11 @@ test("上传失败显示错误，认证状态保持未提交", async ({ page, re
   });
   await page.getByRole("button", { name: "提交认证申请", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("照片内容无效");
+  await expect(page.getByRole("region", { name: "确认认证资料" })).toHaveCount(
+    0,
+  );
   await expect(page.getByText("未提交认证", { exact: true })).toBeVisible();
+  expect(submissions).toBe(0);
 });
 
 test("移动端申请页面无横向溢出", async ({ page, request }) => {
@@ -289,8 +311,312 @@ test("移动端申请页面无横向溢出", async ({ page, request }) => {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBeTruthy();
+  await fillApplication(page, "移动端同学");
+  await openConfirmation(page);
+  await expect(
+    page.getByRole("region", { name: "确认认证资料" }).getByRole("img"),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
   await page.screenshot({
     path: "test-results/verification-mobile.png",
     fullPage: true,
   });
+});
+
+test("确认前不提交，返回保留资料，修改后的内容及照片与正式申请一致", async ({
+  page,
+  request,
+}) => {
+  const user = await student(request);
+  const headers = { Authorization: `Bearer ${user.accessToken}` };
+  await page.addInitScript(() => {
+    const revoke = URL.revokeObjectURL.bind(URL);
+    window.revokedPreviews = [];
+    URL.revokeObjectURL = (url) => {
+      window.revokedPreviews.push(url);
+      revoke(url);
+    };
+  });
+  await use(page, user);
+  let submissions = 0;
+  page.on("request", (r) => {
+    if (
+      r.method() === "POST" &&
+      new URL(r.url()).pathname === "/api/auth/verification-applications"
+    )
+      submissions++;
+  });
+  await fillApplication(page, " 核对同学 ");
+  await openConfirmation(page);
+  const summary = page.getByRole("region", { name: "确认认证资料" });
+  await expect(summary).toContainText("核对同学");
+  await expect(summary).toContainText("202600123456");
+  const preview = await summary.getByRole("img").getAttribute("src");
+  expect(preview).toMatch(/^blob:/);
+  await expect(summary.getByRole("img")).toBeVisible();
+  expect(
+    (await (await request.get("/api/auth/verify-status", { headers })).json())
+      .status,
+  ).toBe("not_submitted");
+  expect(
+    (
+      await (
+        await request.get("/api/auth/verification-applications", { headers })
+      ).json()
+    ).total,
+  ).toBe(0);
+  expect(submissions).toBe(0);
+  // 键盘返回后恢复表单焦点，文件及文字均可继续修改。
+  await summary.getByRole("button", { name: "返回修改" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("button", { name: "提交认证申请", exact: true }),
+  ).toBeFocused();
+  await expect(page.getByLabel("真实姓名", { exact: true })).toHaveValue(
+    " 核对同学 ",
+  );
+  expect(
+    await page.locator("input[type=file]").evaluate((el) => el.files.length),
+  ).toBe(1);
+  expect(
+    await page.evaluate((url) => window.revokedPreviews.includes(url), preview),
+  ).toBe(true);
+  await page.getByLabel("真实姓名", { exact: true }).fill("修改后同学");
+  await page.getByLabel("学号", { exact: true }).fill("202600987654");
+  await openConfirmation(page);
+  await expect(summary).toContainText("修改后同学");
+  await expect(summary).toContainText("202600987654");
+  const secondPreview = await summary.getByRole("img").getAttribute("src");
+  const sent = page.waitForResponse(
+    (r) =>
+      r.request().method() === "POST" &&
+      new URL(r.url()).pathname === "/api/auth/verification-applications",
+  );
+  await summary.getByRole("button", { name: "确认提交", exact: true }).click();
+  expect((await sent).status()).toBe(201);
+  await expect(page.getByText("待审核", { exact: true }).first()).toBeVisible();
+  expect(submissions).toBe(1);
+  const history = await (
+    await request.get("/api/auth/verification-applications", { headers })
+  ).json();
+  expect(history.total).toBe(1);
+  expect(history.items[0].realName).toBe("修改后同学");
+  expect(history.items[0].studentNo).toBe("********7654");
+  const photo = await request.get(
+    `/api/auth/verification-applications/${history.items[0].applicationId}/photo`,
+    { headers },
+  );
+  expect(await photo.body()).toEqual(readFileSync(fixture));
+  expect(
+    await page.evaluate(
+      (url) => window.revokedPreviews.includes(url),
+      secondPreview,
+    ),
+  ).toBe(true);
+});
+
+test("确认提交失败后保留资料可重试，连续点击只创建一份申请", async ({
+  page,
+  request,
+}) => {
+  const user = await student(request);
+  await use(page, user);
+  await fillApplication(page, "失败重试同学");
+  await openConfirmation(page);
+  const summary = page.getByRole("region", { name: "确认认证资料" });
+  let attempts = 0,
+    release;
+  const waiting = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/auth/verification-applications", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    attempts++;
+    if (attempts === 1)
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "DEPENDENCY_UNAVAILABLE",
+          detail: "提交暂不可用，请重试",
+          fields: {},
+        }),
+      });
+    await waiting;
+    await route.continue();
+  });
+  await summary.getByRole("button", { name: "确认提交", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("提交暂不可用");
+  await expect(summary).toContainText("失败重试同学");
+  await expect(summary.getByRole("img")).toBeVisible();
+  expect(
+    (
+      await (
+        await request.get("/api/auth/verification-applications", {
+          headers: { Authorization: `Bearer ${user.accessToken}` },
+        })
+      ).json()
+    ).total,
+  ).toBe(0);
+  await summary
+    .getByRole("button", { name: "确认提交", exact: true })
+    .evaluate((button) => {
+      button.click();
+      button.click();
+    });
+  await expect(
+    summary.getByRole("button", { name: "正在提交…", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    summary.getByRole("button", { name: "返回修改" }),
+  ).toBeDisabled();
+  expect(attempts).toBe(2);
+  release();
+  await expect(page.getByText("待审核", { exact: true }).first()).toBeVisible();
+  expect(
+    (
+      await (
+        await request.get("/api/auth/verification-applications", {
+          headers: { Authorization: `Bearer ${user.accessToken}` },
+        })
+      ).json()
+    ).total,
+  ).toBe(1);
+  expect(attempts).toBe(2);
+});
+
+test("空字段、错误类型和超过5MB照片不能进入确认或创建申请", async ({
+  page,
+  request,
+}) => {
+  const user = await student(request);
+  await use(page, user);
+  await fillApplication(page, "   ");
+  await page.getByRole("button", { name: "提交认证申请", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("请填写姓名");
+  await expect(page.getByRole("region", { name: "确认认证资料" })).toHaveCount(
+    0,
+  );
+  await page.getByLabel("真实姓名", { exact: true }).fill("文件检查同学");
+  for (const file of [
+    {
+      name: "invalid.gif",
+      mimeType: "image/gif",
+      buffer: Buffer.from("GIF89a"),
+    },
+    {
+      name: "oversize.png",
+      mimeType: "image/png",
+      buffer: Buffer.alloc(5 * 1024 * 1024 + 1),
+    },
+  ]) {
+    await page.locator("input[type=file]").setInputFiles(file);
+    await expect(page.getByRole("alert")).toContainText("不超过 5 MB");
+    await page
+      .getByRole("button", { name: "提交认证申请", exact: true })
+      .click();
+    await expect(
+      page.getByRole("region", { name: "确认认证资料" }),
+    ).toHaveCount(0);
+  }
+  expect(
+    (
+      await (
+        await request.get("/api/auth/verification-applications", {
+          headers: { Authorization: `Bearer ${user.accessToken}` },
+        })
+      ).json()
+    ).total,
+  ).toBe(0);
+});
+
+test("确认期间会话失效时跳转登录且不创建申请，离开页面释放预览", async ({
+  page,
+  request,
+}) => {
+  const user = await student(request);
+  await page.addInitScript(() => {
+    const revoke = URL.revokeObjectURL.bind(URL);
+    window.revokedPreviews = [];
+    URL.revokeObjectURL = (url) => {
+      window.revokedPreviews.push(url);
+      revoke(url);
+    };
+  });
+  await use(page, user);
+  await fillApplication(page, "会话检查同学");
+  await openConfirmation(page);
+  const preview = await page
+    .getByRole("region", { name: "确认认证资料" })
+    .getByRole("img")
+    .getAttribute("src");
+  await page
+    .getByRole("link", { name: "代取大厅", exact: true })
+    .first()
+    .click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect
+    .poll(() =>
+      page.evaluate((url) => window.revokedPreviews.includes(url), preview),
+    )
+    .toBe(true);
+  await page.goto("/verification");
+  await fillApplication(page, "会话检查同学");
+  await openConfirmation(page);
+  const headers = { Authorization: `Bearer ${user.accessToken}` };
+  expect((await request.post("/api/auth/logout", { headers })).status()).toBe(
+    200,
+  );
+  const rejected = page.waitForResponse(
+    (r) =>
+      r.request().method() === "POST" &&
+      new URL(r.url()).pathname === "/api/auth/verification-applications",
+  );
+  await page.getByRole("button", { name: "确认提交", exact: true }).click();
+  expect((await rejected).status()).toBe(401);
+  await expect(page).toHaveURL(/\/login\?redirect=/);
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("accessToken")),
+  ).toBeNull();
+});
+
+test("确认期间另一页面已提交时，以服务端状态为准并拒绝额外申请", async ({
+  page,
+  request,
+}) => {
+  const user = await student(request);
+  const headers = { Authorization: `Bearer ${user.accessToken}` };
+  await use(page, user);
+  await fillApplication(page, "状态竞争同学");
+  await openConfirmation(page);
+  expect(
+    (
+      await request.post("/api/auth/verification-applications", {
+        headers,
+        multipart: {
+          realName: "另一页面同学",
+          studentNo: "202600123456",
+          photo: {
+            name: "sample.png",
+            mimeType: "image/png",
+            buffer: readFileSync(fixture),
+          },
+        },
+      })
+    ).status(),
+  ).toBe(201);
+  await page.getByRole("button", { name: "确认提交", exact: true }).click();
+  await expect(page.getByText("待审核", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("region", { name: "确认认证资料" })).toHaveCount(
+    0,
+  );
+  const history = await (
+    await request.get("/api/auth/verification-applications", { headers })
+  ).json();
+  expect(history.total).toBe(1);
+  expect(history.items[0].realName).toBe("另一页面同学");
 });
