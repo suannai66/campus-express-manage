@@ -27,14 +27,18 @@ const error = ref(""),
   input = ref(null),
   photo = ref(null),
   confirmation = ref(null),
+  confirmationPanel = ref(null),
   confirmTitle = ref(null),
-  submitButton = ref(null);
+  submitButton = ref(null),
+  statusHeading = ref(null),
+  photoError = ref("");
 const canSubmit = computed(
   () =>
     state.value && ["not_submitted", "rejected"].includes(state.value.status),
 );
 let timer,
   generation = 0,
+  polling = false,
   previewUrl = "",
   disposed = false;
 function clearConfirmation() {
@@ -42,8 +46,18 @@ function clearConfirmation() {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = "";
 }
-watch(canSubmit, (allowed) => {
-  if (!allowed) clearConfirmation();
+watch(canSubmit, async (allowed) => {
+  if (allowed) return;
+  photoError.value = "";
+  if (!confirmation.value) return;
+  const restoreFocus = confirmationPanel.value?.contains(
+    document.activeElement,
+  );
+  clearConfirmation();
+  if (restoreFocus) {
+    await nextTick();
+    statusHeading.value?.focus();
+  }
 });
 async function returnToEdit() {
   if (busy.value) return;
@@ -52,35 +66,51 @@ async function returnToEdit() {
   await nextTick();
   submitButton.value?.focus();
 }
-async function refresh() {
+async function refresh(background = false) {
   if (disposed) return;
   const version = ++generation;
-  loading.value = true;
-  error.value = "";
-  try {
-    const result = await Promise.all([
-      verificationApi.status(),
-      verificationApi.history(history.value?.page || 1),
-      verificationApi.notifications(notifications.value?.page || 1),
-    ]);
-    if (!disposed && version === generation)
-      [state.value, history.value, notifications.value] = result;
-  } catch (cause) {
-    if (!disposed && version === generation) error.value = cause.message;
-  } finally {
-    if (!disposed && version === generation) loading.value = false;
+  if (background) {
+    polling = true;
+  } else {
+    loading.value = true;
+    error.value = "";
   }
+  const historyPage = history.value?.page || 1;
+  const notificationPage = notifications.value?.page || 1;
+  try {
+    const [nextState, nextHistory, nextNotifications] = await Promise.all([
+      verificationApi.status(),
+      verificationApi.history(historyPage),
+      verificationApi.notifications(notificationPage),
+    ]);
+    if (disposed || version !== generation) return;
+    state.value = nextState;
+    if (!background || (history.value?.page || 1) === historyPage)
+      history.value = nextHistory;
+    if (!background || (notifications.value?.page || 1) === notificationPage)
+      notifications.value = nextNotifications;
+  } catch (cause) {
+    if (!background && !disposed && version === generation)
+      error.value = cause.message;
+  } finally {
+    if (background) polling = false;
+    else if (!disposed && version === generation) loading.value = false;
+  }
+}
+function refreshFromButton() {
+  if (!busy.value && !checking.value && !loading.value) refresh();
 }
 function choose(event) {
   file.value = null;
   error.value = "";
+  photoError.value = "";
   const value = event.target.files[0];
   if (!value) return;
   if (
     !["image/jpeg", "image/png"].includes(value.type) ||
     value.size > 5 * 1024 * 1024
   ) {
-    error.value = "请选择不超过 5 MB 的 JPEG / PNG 照片。";
+    photoError.value = "请选择不超过 5 MB 的 JPEG / PNG 照片。";
     event.target.value = "";
     return;
   }
@@ -113,6 +143,7 @@ async function prepareConfirmation() {
     return;
   error.value = "";
   message.value = "";
+  photoError.value = "";
   if (!name.value.trim() || !number.value.trim() || !file.value) {
     error.value = "请填写姓名、学号并选择证件照片。";
     return;
@@ -141,11 +172,15 @@ async function prepareConfirmation() {
   } catch (cause) {
     clearConfirmation();
     if (!disposed)
-      error.value = cause.message.includes("像素")
+      photoError.value = cause.message.includes("像素")
         ? cause.message
         : "照片内容无效或无法预览，请重新选择清晰的JPEG / PNG照片。";
   } finally {
     checking.value = false;
+    if (photoError.value && document.activeElement === document.body) {
+      await nextTick();
+      input.value?.focus();
+    }
   }
 }
 async function submit() {
@@ -169,7 +204,6 @@ async function submit() {
     const result = await verificationApi.submit(body);
     if (disposed) return;
     state.value = { ...result, verified: false, rejectReason: null };
-    clearConfirmation();
     message.value = "认证资料已提交，请等待管理员审核。";
     file.value = null;
     if (input.value) input.value.value = "";
@@ -177,8 +211,8 @@ async function submit() {
     await refresh();
   } catch (cause) {
     if (!disposed) {
-      error.value = cause.message;
       if (cause.status === 409) await refresh();
+      error.value = cause.message;
     }
   } finally {
     busy.value = false;
@@ -198,9 +232,10 @@ function refreshPending() {
     !document.hidden &&
     !busy.value &&
     !loading.value &&
+    !polling &&
     state.value?.status === "pending"
   )
-    refresh();
+    refresh(true);
 }
 onMounted(() => {
   verificationApi
@@ -230,29 +265,43 @@ onBeforeUnmount(() => {
     <button
       v-if="demoEnabled"
       class="primary-button"
-      :disabled="busy || loading || state?.status !== 'pending'"
+      :aria-disabled="busy || loading || state?.status !== 'pending'"
       @click="demoApprove"
     >
-      {{ busy ? "正在处理…" : "自动审核（演示）" }}
+      自动审核（演示）<span v-if="busy" aria-hidden="true">（正在处理…）</span>
     </button>
   </PageHeading>
-  <p v-if="error" role="alert" class="notice">{{ error }}</p>
-  <p v-if="message" role="status" class="notice">{{ message }}</p>
-  <section class="panel form-panel">
+  <p role="alert" :class="{ notice: error || photoError }">
+    <span id="verification-error">{{ photoError || error }}</span>
+  </p>
+  <p role="status" :class="{ notice: message }">{{ message }}</p>
+  <section class="panel form-panel" aria-labelledby="verification-title">
     <div class="verification-banner">
-      <span class="quick-icon mint"><ShieldCheck /></span>
+      <span class="quick-icon mint" aria-hidden="true"><ShieldCheck /></span>
       <div>
-        <h2>学生身份认证</h2>
+        <h2
+          id="verification-title"
+          ref="statusHeading"
+          tabindex="-1"
+          aria-describedby="verification-current-status"
+        >
+          学生身份认证
+        </h2>
         <p>提交资料 → 管理员审核 → 查看结果</p>
       </div>
-      <span class="soft-tag">{{
-        state ? statusLabels[state.status] : "正在查询认证状态"
-      }}</span>
+      <span
+        id="verification-current-status"
+        class="soft-tag"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {{ state ? statusLabels[state.status] : "正在查询认证状态" }}
+      </span>
     </div>
     <button
       class="text-button"
-      :disabled="busy || checking || loading"
-      @click="refresh"
+      :aria-disabled="busy || checking || loading"
+      @click="refreshFromButton"
     >
       刷新认证结果
     </button>
@@ -289,19 +338,28 @@ onBeforeUnmount(() => {
               placeholder="请输入完整学号"
           /></label>
         </div>
-        <label class="upload-area"
-          >学生证 / 校园卡照片<input
+        <div class="upload-area">
+          <label for="verification-photo-input">学生证 / 校园卡照片</label>
+          <input
+            id="verification-photo-input"
             ref="input"
             type="file"
             accept="image/jpeg,image/png"
             required
+            :aria-invalid="photoError ? 'true' : undefined"
+            :aria-describedby="
+              photoError
+                ? 'verification-photo-requirements verification-error'
+                : 'verification-photo-requirements'
+            "
             @change="choose"
-          /><span>{{ file ? file.name : "选择清晰、完整的证件照片" }}</span
-          ><small
-            >JPEG / PNG，单张不超过 5 MB、2500
+          />
+          <span v-if="file" aria-hidden="true">{{ file.name }}</span>
+          <small id="verification-photo-requirements"
+            >请选择清晰、完整的 JPEG / PNG 照片，单张不超过 5 MB、2500
             万像素。仅本人及审核管理员可查看；课程演示请使用虚构资料。</small
-          ></label
-        >
+          >
+        </div>
         <button ref="submitButton" class="primary-button" type="submit">
           {{
             checking
@@ -315,6 +373,7 @@ onBeforeUnmount(() => {
     </form>
     <section
       v-if="confirmation"
+      ref="confirmationPanel"
       aria-labelledby="verification-confirm-title"
       class="verification-confirmation"
     >
@@ -329,6 +388,8 @@ onBeforeUnmount(() => {
         <dd>{{ confirmation.realName }}</dd>
         <dt>学号</dt>
         <dd>{{ confirmation.studentNo }}</dd>
+        <dt>照片文件</dt>
+        <dd>{{ confirmation.photo.name }}</dd>
       </dl>
       <img :src="confirmation.previewUrl" alt="本次待提交的学生证件照片" />
       <p class="muted">仅本人及审核管理员可查看认证资料。</p>
@@ -336,7 +397,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="outline-button"
-          :disabled="busy"
+          :aria-disabled="busy"
           @click="returnToEdit"
         >
           返回修改
@@ -344,7 +405,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="primary-button"
-          :disabled="busy || loading"
+          :aria-disabled="busy || loading"
           @click="submit"
         >
           {{ busy ? "正在提交…" : "确认提交" }}
@@ -371,6 +432,14 @@ onBeforeUnmount(() => {
 }
 .verification-banner {
   flex-wrap: wrap;
+}
+.upload-area span,
+.upload-area small {
+  color: var(--green);
+}
+.form-panel a {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 .form-panel {
   overflow-wrap: anywhere;

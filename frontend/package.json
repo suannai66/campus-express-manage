@@ -11,6 +11,7 @@
     "test:orders": "playwright test --config playwright.f3.config.js",
     "test:identity": "playwright test --config playwright.identity.config.js",
     "test:verification": "playwright test --config playwright.verification.config.js",
+    "test:accessibility": "playwright test --config playwright.accessibility.config.js",
     "test:fulfillment": "playwright test --config playwright.fulfillment.config.js",
     "test:finance": "playwright test --config playwright.finance.config.js"
   },

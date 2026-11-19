@@ -8,6 +8,8 @@ const dialog = ref(null),
   error = ref(""),
   loading = ref(false);
 let generation = 0;
+let opener = null;
+
 function revoke() {
   if (url.value) URL.revokeObjectURL(url.value);
   url.value = "";
@@ -19,12 +21,21 @@ watch(
     revoke();
     error.value = "";
     if (!id) {
+      loading.value = false;
       dialog.value?.close();
+      if (opener?.isConnected && document.activeElement === document.body) {
+        opener.focus();
+      }
+      opener = null;
       return;
     }
-    await nextTick();
-    if (!dialog.value.open) dialog.value.showModal();
+    if (!dialog.value?.open && document.activeElement instanceof HTMLElement) {
+      opener = document.activeElement;
+    }
     loading.value = true;
+    await nextTick();
+    if (version !== generation || !dialog.value) return;
+    if (!dialog.value.open) dialog.value.showModal();
     try {
       const blob = await verificationApi.photo(id);
       if (version === generation) url.value = URL.createObjectURL(blob);
@@ -49,10 +60,18 @@ onBeforeUnmount(() => {
     @click.self="emit('close')"
   >
     <h2 id="verification-photo-title">证件照片</h2>
-    <p v-if="loading">正在读取照片…</p>
-    <p v-if="error" role="alert">{{ error }}</p>
-    <img v-if="url" :src="url" alt="本次申请提交的学生证件照片" />
-    <button class="outline-button" @click="emit('close')">关闭照片</button>
+    <p aria-live="polite" aria-atomic="true">
+      {{ loading ? "正在读取照片…" : url ? "证件照片已加载。" : "" }}
+    </p>
+    <p role="alert">{{ error }}</p>
+    <img
+      v-if="url"
+      :src="url"
+      alt="申请人上传的认证证件照片，供审核时核对姓名和学号"
+    />
+    <button class="outline-button" autofocus @click="emit('close')">
+      关闭照片
+    </button>
   </dialog>
 </template>
 <style scoped>
