@@ -72,7 +72,12 @@ test("错误验证码显示错误且发送倒计时生效", async ({ page, reque
   await page.goto("/login");
   await page.getByLabel("手机号", { exact: true }).fill(await account(request));
   await page.getByRole("button", { name: "获取验证码" }).click();
-  await expect(page.getByRole("button", { name: /秒后重试/ })).toBeDisabled();
+  const requestCode = page.getByRole("button", {
+    name: "获取验证码",
+    exact: true,
+  });
+  await expect(requestCode).toBeDisabled();
+  await expect(requestCode).toContainText(/秒后重试/);
   await page.getByLabel("验证码", { exact: true }).fill("000000");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("验证码错误");
@@ -124,7 +129,7 @@ test("403 保留会话，退出失败可重试", async ({ page, request }) => {
     }),
   );
   await page.getByRole("button", { name: "退出登录" }).click();
-  await expect(page.getByRole("alert")).toContainText("退出失败");
+  await expect(page.locator("#session-alert")).toContainText("退出失败");
   expect(await page.evaluate(() => sessionStorage.getItem("accessToken"))).toBe(
     token,
   );

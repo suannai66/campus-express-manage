@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onMounted, onBeforeUnmount, ref } from "vue";
 import PageHeading from "../../components/PageHeading.vue";
 import VerificationPhoto from "./VerificationPhoto.vue";
 import { verificationApi, statusLabels, formatTime } from "./verification-api";
@@ -7,15 +7,31 @@ const data = ref(null),
   selected = ref(null),
   status = ref("pending"),
   reason = ref(""),
+  reasonError = ref(""),
   error = ref(""),
   message = ref("");
 const admin = ref(false),
   loading = ref(false),
+  detailLoading = ref(false),
   busy = ref(false),
-  photo = ref(null);
+  photo = ref(null),
+  listPanel = ref(null),
+  listHeading = ref(null),
+  detailPanel = ref(null),
+  detailHeading = ref(null),
+  reasonInput = ref(null);
 let generation = 0,
   listGeneration = 0,
   disposed = false;
+
+const listStatus = computed(() => {
+  if (loading.value) return "正在加载申请…";
+  if (!data.value) return "";
+  return data.value.items.length
+    ? `第 ${data.value.page} 页，共 ${data.value.total} 条申请。`
+    : "当前没有匹配的认证申请";
+});
+
 async function load(page = 1) {
   const version = ++listGeneration;
   loading.value = true;
@@ -28,33 +44,81 @@ async function load(page = 1) {
       await load(last);
       return;
     }
+    const previousFocus = document.activeElement;
+    const focusWasInList = listPanel.value?.contains(previousFocus);
     data.value = result;
+    await nextTick();
+    if (
+      version === listGeneration &&
+      focusWasInList &&
+      !previousFocus.isConnected &&
+      document.activeElement === document.body
+    ) {
+      listHeading.value?.focus();
+    }
   } catch (cause) {
     if (!disposed && version === listGeneration) error.value = cause.message;
   } finally {
     if (version === listGeneration) loading.value = false;
   }
 }
-async function detail(id) {
+function changeStatus() {
+  generation++;
+  detailLoading.value = false;
+  selected.value = null;
+  void load();
+}
+
+function goToPage(page) {
+  if (
+    busy.value ||
+    loading.value ||
+    page < 1 ||
+    page > Math.ceil(data.value.total / 20)
+  )
+    return;
+  void load(page);
+}
+
+async function detail(id, trigger = null) {
+  if (busy.value && trigger) return;
   const version = ++generation;
+  const focusWasInDetail = detailPanel.value?.contains(document.activeElement);
+  detailLoading.value = true;
   selected.value = null;
   reason.value = "";
+  reasonError.value = "";
   error.value = "";
   try {
     const result = await verificationApi.detail(id);
-    if (!disposed && version === generation) selected.value = result;
+    if (disposed || version !== generation) return;
+    selected.value = result;
+    await nextTick();
+    if (disposed || version !== generation) return;
+    // Keep focus where the reviewer moved it while the request was pending.
+    if (
+      document.activeElement === trigger ||
+      (focusWasInDetail && document.activeElement === document.body)
+    ) {
+      detailHeading.value?.focus();
+    }
   } catch (cause) {
-    if (!disposed) error.value = cause.message;
+    if (!disposed && version === generation) error.value = cause.message;
+  } finally {
+    if (version === generation) detailLoading.value = false;
   }
 }
 async function review(decision) {
   if (busy.value || !selected.value) return;
   if (decision === "rejected" && !reason.value.trim()) {
-    error.value = "驳回时请填写具体理由。";
+    reasonError.value = "驳回时请填写具体理由。";
+    await nextTick();
+    reasonInput.value?.focus();
     return;
   }
   busy.value = true;
   error.value = "";
+  reasonError.value = "";
   message.value = "";
   const id = selected.value.applicationId;
   try {
@@ -63,16 +127,24 @@ async function review(decision) {
       rejectReason: decision === "rejected" ? reason.value.trim() : null,
       version: selected.value.version,
     });
+    if (disposed) return;
+    const focusWasInDetail = detailPanel.value?.contains(
+      document.activeElement,
+    );
     message.value = "审核结果已保存，已通知申请人。";
     selected.value = null;
     reason.value = "";
+    await nextTick();
+    if (focusWasInDetail && document.activeElement === document.body) {
+      listHeading.value?.focus();
+    }
     await load(data.value?.page || 1);
   } catch (cause) {
-    error.value = cause.message;
+    if (disposed) return;
     if (cause.status === 409) {
       await detail(id);
-      error.value = cause.message;
     }
+    if (!disposed) error.value = cause.message;
   } finally {
     busy.value = false;
   }
@@ -102,19 +174,23 @@ onBeforeUnmount(() => {
     subtitle="核对姓名、学号与证件；驳回时请填写具体理由。"
     eyebrow="ADMINISTRATION"
   />
-  <p v-if="error" class="notice" role="alert">{{ error }}</p>
-  <p v-if="message" class="notice" role="status">{{ message }}</p>
+  <p :class="{ notice: error }" role="alert">{{ error }}</p>
+  <p :class="{ notice: message }" role="status">{{ message }}</p>
   <template v-if="admin">
-    <section class="panel review-panel">
+    <section
+      ref="listPanel"
+      class="panel review-panel"
+      aria-labelledby="review-list-heading"
+    >
+      <h2 id="review-list-heading" ref="listHeading" tabindex="-1">
+        认证申请列表
+      </h2>
       <div class="review-tools">
         <label
           >审核状态<select
             v-model="status"
-            :disabled="busy || loading"
-            @change="
-              selected = null;
-              load();
-            "
+            :disabled="busy"
+            @change="changeStatus"
           >
             <option value="pending">待审核</option>
             <option value="approved">已通过</option>
@@ -123,15 +199,19 @@ onBeforeUnmount(() => {
           </select></label
         ><button
           class="outline-button"
-          :disabled="busy || loading"
-          @click="load(data?.page || 1)"
+          :aria-disabled="busy || loading"
+          @click="!busy && !loading && load(data?.page || 1)"
         >
           刷新申请列表
         </button>
       </div>
-      <p v-if="loading">正在加载申请…</p>
-      <p v-else-if="data && !data.items.length">当前没有匹配的认证申请</p>
-      <ul v-if="data" class="application-list">
+      <p aria-live="polite" aria-atomic="true">{{ listStatus }}</p>
+      <ul
+        v-if="data?.items.length"
+        class="application-list"
+        role="list"
+        :aria-busy="loading"
+      >
         <li v-for="item in data.items" :key="item.applicationId">
           <div>
             <strong>{{ item.realName }}</strong> · {{ item.studentNo }}
@@ -141,8 +221,9 @@ onBeforeUnmount(() => {
           </div>
           <button
             class="text-button"
-            :disabled="busy"
-            @click="detail(item.applicationId)"
+            :aria-label="`查看申请详情：${item.realName}，学号 ${item.studentNo}`"
+            :aria-disabled="busy"
+            @click="detail(item.applicationId, $event.currentTarget)"
           >
             查看申请详情
           </button>
@@ -150,21 +231,29 @@ onBeforeUnmount(() => {
       </ul>
       <div v-if="data && data.total > 20" class="review-tools">
         <button
-          :disabled="busy || loading || data.page === 1"
-          @click="load(data.page - 1)"
+          :aria-disabled="busy || loading || data.page === 1"
+          @click="goToPage(data.page - 1)"
         >
-          上一页</button
-        ><span>第 {{ data.page }} 页 / 共 {{ data.total }} 条</span
-        ><button
-          :disabled="busy || loading || data.page * 20 >= data.total"
-          @click="load(data.page + 1)"
+          上一页
+        </button>
+        <button
+          :aria-disabled="busy || loading || data.page * 20 >= data.total"
+          @click="goToPage(data.page + 1)"
         >
           下一页
         </button>
       </div>
     </section>
-    <section v-if="selected" class="panel review-panel" aria-label="申请详情">
-      <h2>申请详情</h2>
+    <p aria-live="polite">{{ detailLoading ? "正在加载申请详情…" : "" }}</p>
+    <section
+      v-if="selected"
+      ref="detailPanel"
+      class="panel review-panel"
+      aria-labelledby="review-detail-heading"
+    >
+      <h2 id="review-detail-heading" ref="detailHeading" tabindex="-1">
+        申请详情
+      </h2>
       <dl>
         <dt>真实姓名</dt>
         <dd>{{ selected.realName }}</dd>
@@ -177,31 +266,48 @@ onBeforeUnmount(() => {
         <dt v-if="selected.rejectReason">驳回理由</dt>
         <dd v-if="selected.rejectReason">{{ selected.rejectReason }}</dd>
       </dl>
-      <button class="outline-button" @click="photo = selected.applicationId">
+      <button
+        class="outline-button"
+        aria-haspopup="dialog"
+        :aria-disabled="busy"
+        @click="!busy && (photo = selected.applicationId)"
+      >
         查看证件照片
       </button>
       <form
         v-if="selected.status === 'pending'"
+        :aria-busy="busy"
         @submit.prevent="review('rejected')"
       >
-        <label
-          >驳回理由<textarea
-            v-model="reason"
-            maxlength="500"
-            rows="3"
-            :disabled="busy"
-            placeholder="驳回时必填，例如证件上的学号不清晰"
-          />
-        </label>
+        <label for="review-reason">驳回理由</label>
+        <p id="review-reason-hint">驳回时必填，最多 500 字。</p>
+        <textarea
+          id="review-reason"
+          ref="reasonInput"
+          v-model="reason"
+          maxlength="500"
+          rows="3"
+          :readonly="busy"
+          :aria-invalid="reasonError ? 'true' : undefined"
+          :aria-describedby="
+            reasonError
+              ? 'review-reason-hint review-reason-error'
+              : 'review-reason-hint'
+          "
+          @input="reasonError = ''"
+        />
+        <p v-if="reasonError" id="review-reason-error" class="notice">
+          {{ reasonError }}
+        </p>
         <div class="review-tools">
           <button
             class="primary-button"
             type="button"
-            :disabled="busy"
+            :aria-disabled="busy"
             @click="review('approved')"
           >
             通过认证</button
-          ><button class="outline-button" type="submit" :disabled="busy">
+          ><button class="outline-button" type="submit" :aria-disabled="busy">
             驳回申请
           </button>
         </div>
@@ -215,6 +321,18 @@ onBeforeUnmount(() => {
   padding: 24px;
   margin: 24px 0;
   overflow-wrap: anywhere;
+}
+.review-panel h2 {
+  width: fit-content;
+  margin-bottom: 12px;
+  scroll-margin-top: 16px;
+}
+.review-panel h2:focus {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+.review-panel button[aria-disabled="true"] {
+  cursor: not-allowed;
 }
 .review-tools {
   display: flex;
@@ -248,5 +366,8 @@ dd {
 }
 form {
   margin-top: 24px;
+}
+form .review-tools {
+  margin-top: 12px;
 }
 </style>

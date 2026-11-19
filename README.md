@@ -24,6 +24,7 @@ npm test          # 浏览器冒烟测试，自动启动前端服务
 npm run test:identity # 真实账号流程，临时数据库和受控模拟验证码
 npm run test:orders   # F3/F4 测试，A/D 使用隔离测试替身
 npm run test:verification # 真实账号提交、审核、通知与照片权限
+npm run test:accessibility # 身份页面键盘、控件语义与强制色测试
 npm run test:fulfillment  # C：真实账号接单、履约、互评、信用、锁单与退款
 ```
 
